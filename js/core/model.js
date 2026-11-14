@@ -190,6 +190,18 @@ export async function migrateData() {
     await db.put('slots', { room: '', plate: '', vehicle: '', ...(spare || {}), id: 'CAR-5', zone: 'CAR' });
     if (spare) await db.remove('slots', 'SPARE');
   }
+  // รายการคลังใน site.js เปลี่ยนหลังเปิดแอปครั้งแรก: เพิ่มคลังที่ยังไม่มี และลบคลังตั้งต้นเดิมที่ไม่มีใน site.js แล้ว
+  // (ลบเฉพาะที่ยังเป็นค่าตั้งต้นจาก seed ไม่เคยแก้ ไม่เคยซิงก์ และไม่มีผู้เช่าหรือบิล — ข้อมูลจริงไม่ถูกแตะ)
+  const siteUnits = (SITE.floors || []).flatMap(f => (f.units || []).map(id => ({ id: String(id), floor: Number(f.no) || 1 })));
+  if (siteUnits.length) {
+    const ids = new Set(siteUnits.map(u => u.id));
+    const used = new Set([...db.all('tenants', { raw: true }), ...db.all('bills', { raw: true })].map(o => String(o.room || '')));
+    for (const r of db.all('rooms', { withDeleted: true, raw: true }))
+      if (!ids.has(r.id) && r.updatedBy === 'seed' && !used.has(r.id)) await db.hardRemove('rooms', r.id);
+    const add = siteUnits.filter(u => !db.all('rooms', { withDeleted: true, raw: true }).some(r => r.id === u.id))
+      .map(u => ({ ...u, kind: 'room', label: '', type: SITE.unitType || '', rent: 0, updatedAt: '2000-01-01T00:00:00.000Z', updatedBy: 'seed' }));
+    if (add.length) await db.putMany('rooms', add);
+  }
 }
 
 // งวดบิลที่ควรทำตอนนี้: หลังวันที่ 20 = เดือนหน้า

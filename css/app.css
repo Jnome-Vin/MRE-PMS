@@ -44,8 +44,8 @@ nav.side .ah input{width:18px;height:18px;margin:0 4px;flex:none;accent-color:#f
 .app.autohide nav.side:hover{width:260px;box-shadow:6px 0 24px rgba(0,0,0,.25)}
 .app.autohide nav.side .side-logo{width:52px;height:52px;margin:0 0 12px;transition:all .18s}
 .app.autohide nav.side .side-logo img{width:40px;height:40px;transition:all .18s}
-.app.autohide nav.side:hover .side-logo{width:132px;height:132px;margin:-4px auto 2px}
-.app.autohide nav.side:hover .side-logo img{width:96px;height:96px}
+.app.autohide nav.side:hover .side-logo{width:auto;height:auto;margin:-14px -10px 0;padding:20px 0}
+.app.autohide nav.side:hover .side-logo img{width:200px;height:auto}
 .app.autohide nav.side .brand,.app.autohide nav.side .who{max-height:0;overflow:hidden;opacity:0;transition:opacity .15s}
 .app.autohide nav.side:hover .brand,.app.autohide nav.side:hover .who{max-height:120px;opacity:1}
 .app.autohide nav.side button{padding:11px 13px}
@@ -114,9 +114,9 @@ button.pill.pay-btn:hover{filter:brightness(.95);box-shadow:0 1px 4px rgba(0,0,0
 .auth h1+.note{text-align:center}
 .auth-logo{display:block;width:170px;height:auto;margin:-8px auto 6px}
 /* โลโก้เมนู: กึ่งกลางเหนือชื่ออาคาร · พื้นขาวรอบโลโก้ค่อยๆ จางจนใสกลืนกับแถบเมนู */
-.side-logo{flex:none;width:132px;height:132px;margin:-4px auto 2px;display:flex;align-items:center;justify-content:center;
-  background:radial-gradient(circle closest-side,#fff 0,#fff 58%,rgba(255,255,255,.55) 76%,rgba(255,255,255,0) 100%)}
-.side-logo img{width:96px;height:96px;object-fit:contain}
+.side-logo{flex:none;width:auto;height:auto;margin:-14px -12px 0;padding:20px 0;display:flex;align-items:center;justify-content:center;
+  background:radial-gradient(ellipse closest-side,#fff 0,#fff 62%,rgba(255,255,255,.5) 80%,rgba(255,255,255,0) 100%)}
+.side-logo img{width:200px;height:auto;object-fit:contain}
 .warn-ic{cursor:help}
 .rate-box{background:var(--brand-soft);border:1px solid #c6dcec;border-radius:10px;padding:10px 14px;display:flex;flex-direction:column;gap:8px}
 .rate-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
@@ -367,3 +367,14 @@ body.locked #root,body.locked #modal,body.locked #toast{visibility:hidden}
 .fp.has-img .fp-room .no{font-size:var(--fp-no,16px);white-space:nowrap;font-weight:700;line-height:1.1;color:#0f172a;text-shadow:0 0 2px #fff,0 0 4px #fff,0 0 8px rgba(255,255,255,.95)}
 .fp.has-img .fp-room .nm{font-size:var(--fp-nm,11px);max-width:100%;font-weight:600;color:#1e293b;text-shadow:0 0 3px #fff,0 0 6px #fff;-webkit-line-clamp:2}
 .fp.has-img .fp-room .ic{justify-content:center;margin-top:4px}
+/* ปุ่มซูมหน้าจอมุมขวาล่าง (ซูมเฉพาะพื้นที่เนื้อหา #view) */
+#view{zoom:var(--ui-zoom,1)}
+.zoomer{position:fixed;right:16px;bottom:16px;z-index:40;display:flex;align-items:center;gap:6px;padding:6px 10px;
+  background:rgba(255,255,255,.96);border:1px solid #d5dde6;border-radius:999px;box-shadow:0 4px 14px rgba(20,50,74,.18);font-size:13px}
+.zoomer button{min-width:32px;height:32px;border:0;border-radius:50%;background:#eef3f8;color:#14324a;font-size:18px;font-weight:600;cursor:pointer;line-height:1}
+.zoomer button:hover{background:#dce8f2}
+.zoomer .pct{border-radius:999px;min-width:52px;font-size:13px;background:transparent}
+.zoomer input[type=range]{width:120px;accent-color:#14324a;cursor:pointer}
+body:not(:has(#view)) .zoomer,body.locked .zoomer{display:none}
+@media print{.zoomer{display:none}#view{zoom:1}}
+@media (max-width:700px){.zoomer input[type=range]{width:80px}.zoomer{right:8px;bottom:8px}}html.zoom-in .layout{grid-template-columns:1fr}

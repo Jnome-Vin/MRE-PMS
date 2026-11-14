@@ -81,9 +81,11 @@ function bindHover(el) {
   const fp = el.querySelector('#fp'); if (!fp) return;
   const tip = document.createElement('div'); tip.className = 'fp-tip'; tip.hidden = true; tip.setAttribute('role', 'tooltip'); fp.appendChild(tip);
   const place = e => {
-    const R = fp.getBoundingClientRect(); let x = e.clientX - R.left + 14, y = e.clientY - R.top + 14;
-    if (x + tip.offsetWidth > R.width) x = Math.max(0, e.clientX - R.left - tip.offsetWidth - 14);
-    if (y + tip.offsetHeight > R.height) y = Math.max(0, e.clientY - R.top - tip.offsetHeight - 14);
+    const B = fp.getBoundingClientRect(), z = (B.width / fp.offsetWidth) || 1;   // z = ซูมหน้าจอ (ปุ่มมุมขวาล่าง)
+    const cx = (e.clientX - B.left) / z, cy = (e.clientY - B.top) / z, R = { width: fp.offsetWidth, height: fp.offsetHeight };
+    let x = cx + 14, y = cy + 14;
+    if (x + tip.offsetWidth > R.width) x = Math.max(0, cx - tip.offsetWidth - 14);
+    if (y + tip.offsetHeight > R.height) y = Math.max(0, cy - tip.offsetHeight - 14);
     tip.style.left = x + 'px'; tip.style.top = y + 'px';
   };
   fp.querySelectorAll('.fp-room').forEach(n => {

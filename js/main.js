@@ -72,6 +72,29 @@ document.addEventListener('app-nav', e => nav.go(e.detail.id, e.detail.arg || nu
 // ปุ่ม 🖨️ มุมขวาบนของทุกป๊อปอัป
 document.addEventListener('click', e => { if (e.target.closest('.modal-print')) printScreen(); });
 
+// ปุ่มซูมหน้าจอมุมขวาล่าง: ขยาย/ย่อเฉพาะพื้นที่เนื้อหา (เมนูซ้ายคงขนาดเดิม) · จำค่าไว้ในเครื่องนี้
+function zoomBar() {
+  const MIN = 50, MAX = 200, STEP = 10;
+  const read = () => { try { return Number(localStorage.getItem(KEY('zoom'))) || 100; } catch { return 100; } };
+  const bar = document.createElement('div'); bar.className = 'zoomer no-print';
+  bar.innerHTML = `<button type="button" data-z="-" title="ย่อ" aria-label="ย่อหน้าจอ">−</button>
+    <input type="range" min="${MIN}" max="${MAX}" step="${STEP}" aria-label="ขนาดหน้าจอ">
+    <button type="button" data-z="+" title="ขยาย" aria-label="ขยายหน้าจอ">+</button>
+    <button type="button" data-z="0" class="pct" title="กลับเป็น 100%"></button>`;
+  const range = bar.querySelector('input'), pct = bar.querySelector('.pct');
+  const set = v => {
+    v = Math.min(MAX, Math.max(MIN, Math.round(v / STEP) * STEP));
+    document.documentElement.style.setProperty('--ui-zoom', v / 100);
+    document.documentElement.classList.toggle('zoom-in', v > 100);   // ขยายแล้ว: แผงรายละเอียดย้ายลงใต้ผัง ให้ผังใหญ่ขึ้นจริง
+    range.value = v; pct.textContent = v + '%';
+    try { localStorage.setItem(KEY('zoom'), v); } catch {}
+  };
+  range.oninput = () => set(+range.value);
+  bar.querySelectorAll('[data-z]').forEach(b => b.onclick = () => set(b.dataset.z === '0' ? 100 : +range.value + (b.dataset.z === '+' ? STEP : -STEP)));
+  document.body.appendChild(bar); set(read());
+}
+zoomBar();
+
 let rt; const scheduleRender = () => { clearTimeout(rt); rt = setTimeout(renderView, 300); };
 
 async function loadSeed() {
