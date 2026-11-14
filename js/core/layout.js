@@ -1,6 +1,6 @@
 // ผังแบบปรับได้: รูปแบบแปลน (พื้นหลัง) + กรอบของแต่ละหน่วยเช่า วางทับด้วยตำแหน่งเป็น % ของรูป
 // เก็บที่ settings / id = 'layout' (ซิงก์ทุกเครื่องเหมือนข้อมูลอื่น)
-//   { id:'layout', fileStamp, floors: { '1': { name, image, ratio, boxes: { '101': [x,y,w,h] }, notes: [{ text, box:[x,y,w,h] }] } } }
+//   { id:'layout', fileStamp, floors: { '1': { name, image, ratio, boxes: { '101': [x,y,w,h] หรือ [x,y,w,h,องศา] }, notes: [{ text, box:[x,y,w,h] }] } } }
 //   image = 'photo:<id>' (อัปโหลดจากในแอป) หรือ path ในโฟลเดอร์ app เช่น 'layout/floor-1.jpg' (Claude Desktop สร้างให้)
 // ไฟล์ app/layout/layout.json: ถ้ามี และ updatedAt ใหม่กว่าที่เคยนำเข้า แอปจะนำเข้าอัตโนมัติตอนเปิด (ดู CLAUDE.md)
 import * as db from './db.js';
@@ -11,7 +11,8 @@ export const get = () => db.get('settings', 'layout') || { id: 'layout', floors:
 export const floorOf = f => get().floors?.[String(f)] || null;
 
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, Number(v) || 0));
-const box = b => Array.isArray(b) && b.length === 4 ? [clamp(b[0], 0, 99), clamp(b[1], 0, 99), clamp(b[2], 1, 100), clamp(b[3], 1, 100)] : null;
+// กรอบ = [ซ้าย, บน, กว้าง, สูง] เป็น % · ค่าที่ 5 (ไม่บังคับ) = องศาที่หมุนตามเข็มนาฬิกา สำหรับอาคารที่วางเอียง
+const box = b => Array.isArray(b) && (b.length === 4 || b.length === 5) ? [clamp(b[0], -20, 99), clamp(b[1], -20, 99), clamp(b[2], 1, 100), clamp(b[3], 1, 100), ...(Number(b[4]) ? [clamp(b[4], -180, 180)] : [])] : null;
 
 // ตรวจและทำความสะอาดข้อมูลผัง (ใช้กับไฟล์ที่นำเข้า — ไฟล์อาจเขียนด้วยมือหรือโดย Claude)
 export function normalize(src) {

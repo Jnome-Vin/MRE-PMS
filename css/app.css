@@ -350,3 +350,20 @@ body.locked #root,body.locked #modal,body.locked #toast{visibility:hidden}
 .tbl.audit td{vertical-align:top;white-space:normal}
 .tbl.audit td.det{font-size:13px;color:var(--muted);overflow-wrap:anywhere;min-width:260px}
 @media print{#lockscreen{display:none}}body.locked{overflow:hidden}
+
+/* การ์ดข้อมูลเมื่อชี้เมาส์บนผัง */
+.fp-tip{position:absolute;z-index:5;pointer-events:none;width:270px;background:#fff;border:1px solid #cbd5e1;border-radius:10px;box-shadow:0 8px 24px rgba(15,23,42,.18);padding:10px 12px;font-size:13px;line-height:1.45;color:#334155}
+.fp-tip .hv-h{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px;font-size:14px}
+.fp-tip dl{display:grid;grid-template-columns:auto 1fr;gap:2px 10px;margin:0}
+.fp-tip dt{color:#64748b}.fp-tip dd{margin:0;font-weight:600;overflow-wrap:anywhere}
+.fp-tip .hv-e{color:#64748b;font-size:12.5px;margin-top:4px}
+
+/* ผังที่มีรูปพื้นหลัง: ไม่มีเส้นกรอบ (ผนังในรูปคือขอบเขต) · ชื่อหน่วยเช่าตัวใหญ่กลางกรอบ สีเข้มขอบขาว · สถานะ = สีจาง ๆ ทับพื้น · เส้นกรอบขึ้นเฉพาะตอนเลือก */
+.fp.has-img .fp-room{opacity:1;background:transparent;border:2.5px solid transparent;border-radius:3px;justify-content:center;align-items:center;text-align:center;padding:4px;gap:2px}
+.fp.has-img .fp-room.s-ok{border-color:transparent;background:rgba(34,197,94,.12)}
+.fp.has-img .fp-room.s-due{border-color:transparent;background:rgba(245,158,11,.16)}
+.fp.has-img .fp-room.s-late{border-color:transparent;background:rgba(239,68,68,.16)}
+.fp.has-img .fp-room.sel{border-color:var(--brand);box-shadow:0 0 0 3px var(--brand-soft)}
+.fp.has-img .fp-room .no{font-size:var(--fp-no,16px);white-space:nowrap;font-weight:700;line-height:1.1;color:#0f172a;text-shadow:0 0 2px #fff,0 0 4px #fff,0 0 8px rgba(255,255,255,.95)}
+.fp.has-img .fp-room .nm{font-size:var(--fp-nm,11px);max-width:100%;font-weight:600;color:#1e293b;text-shadow:0 0 3px #fff,0 0 6px #fff;-webkit-line-clamp:2}
+.fp.has-img .fp-room .ic{justify-content:center;margin-top:4px}

@@ -50,6 +50,7 @@ const FRIDGE = `<svg width="30" height="38" viewBox="0 0 38 46" aria-hidden="tru
 // tIn = ผู้เช่าเดิม (ทำสัญญาใหม่ / พิมพ์ซ้ำ) หรือ { room } = ผู้เช่าเข้าใหม่: กรอกครั้งเดียวในหน้าต่างนี้ บันทึกแล้วได้ทั้งข้อมูลผู้เช่าและสัญญา
 const todayIso = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 export async function openContract(tIn = {}, done) {
+  if (K.WH) return openContractWH(tIn, done);   // โครงการประเภทคลัง → สัญญาเช่าคลังสินค้า
   let isNew = !(tIn.id && db.get('tenants', tIn.id));
   const vacant = M.rooms().filter(r => !M.tenantOf(r.id));
   if (isNew && !vacant.length) return toast('ไม่มีคลังว่าง');
@@ -405,6 +406,125 @@ export async function openContract(tIn = {}, done) {
     const r = await K.sendContractLine(C, tenantView(), photoUrl);
     const rec = db.get('tenants', t.id);   // ผู้เช่าใหม่ที่ยังไม่กดบันทึกจะยังไม่มีในฐานข้อมูล
     if (rec) await db.put('tenants', { ...rec, contract: { ...rec.contract, lineSentAt: new Date().toISOString(), pdfUrl: r.pdfUrl || '' } });
+    toast(r.sent ? `ส่งสัญญาเข้า LINE คลัง ${C.room} แล้ว` : `คลัง ${C.room} ยังไม่ผูก LINE OA — เก็บ PDF ไว้ใน Drive แล้ว`, 4000);
+  });
+  calc();
+}
+
+// ---------- สัญญาเช่าคลังสินค้า (โครงการประเภทคลัง): ผู้เช่าเป็นนิติบุคคลหรือบุคคลธรรมดา · ระยะเวลาเช่า · เงินประกัน · อัตราน้ำไฟขั้นต่ำ ----------
+async function openContractWH(tIn = {}, done) {
+  let isNew = !(tIn.id && db.get('tenants', tIn.id));
+  const vacant = M.rooms().filter(r => !M.tenantOf(r.id));
+  if (isNew && !vacant.length) return toast('ไม่มีคลังว่าง');
+  let t = isNew ? { id: uid('t-'), room: vacant.some(r => r.id === tIn.room) ? tIn.room : vacant[0].id, rent: 0, deposit: 0, occupants: [], lang: 'th', active: true, ...tIn, id: uid('t-') } : db.get('tenants', tIn.id);
+  if (isNew && !tIn.rent) t.rent = Number(db.get('rooms', t.room)?.rent) || 0;
+  const C = { ...K.defaultsWH(t), ...(t.contract?.kind === 'wh' ? t.contract : {}) };
+  C.photos = (C.photos || []).map(x => ({ ...x }));
+  const f = (k, label, cls = 'f-blue', attrs = '', full = false) => `<div${full ? ' class="full"' : ''}><label class="l">${label}</label><input class="${cls}" data-k="${k}" value="${esc(C[k] ?? '')}" ${attrs}></div>`;
+  const num = 'inputmode="decimal"';
+  const title = () => `${isNew ? '🏭 ผู้เช่าใหม่ · ทำสัญญาเช่าคลังสินค้า' : '📝 สัญญาเช่าคลังสินค้า'} · คลัง ${esc(C.room)}`;
+  const box = openModal(`<style>${CSS}</style><h3 style="margin-bottom:6px" id="c-title">${title()}</h3>
+    <div class="ctm"><div class="frm" id="cf">
+      <div class="sec"><h4>🏢 1. ผู้เช่า</h4>
+        <div class="seg" id="c-type" style="display:flex;margin-bottom:8px"><button type="button" class="btn" data-t="company">นิติบุคคล (บริษัท / หจก.)</button><button type="button" class="btn" data-t="person">บุคคลธรรมดา</button></div>
+        <div class="g2">
+          ${f('tenantName', '<span id="c-nml">ชื่อนิติบุคคล</span>', 'f-blue', '', true)}
+          <div><label class="l" id="c-taxl">เลขประจำตัวผู้เสียภาษี</label><input class="f-blue" data-k="tenantTaxId" value="${esc(C.tenantTaxId)}" inputmode="numeric"></div>
+          ${f('phone', 'เบอร์โทร')}
+          ${f('tenantAddress', '<span id="c-addrl">ที่ตั้งสำนักงานใหญ่</span>', 'f-blue', '', true)}
+          <div class="full co-only">${f('tenantSigner', 'กรรมการผู้มีอำนาจลงนาม (ฝ่ายผู้เช่า)').slice(5, -6)}</div>
+        </div></div>
+      <div class="sec"><h4>📄 2. รายละเอียดสัญญา</h4>
+        <div class="g2">
+          ${f('contractNo', 'เลขที่สัญญา', 'f-blue', 'placeholder="เช่น RAD-MRE69-07"')}${f('date', 'วันที่ทำสัญญา', 'f-blue', 'type="date"')}
+          <div><label class="l">คลัง</label>${isNew ? `<select class="f-red" id="c-room">${vacant.map(r => `<option ${r.id === C.room ? 'selected' : ''}>${r.id}</option>`).join('')}</select>` : `<input class="f-red" value="${esc(C.room)}" disabled>`}</div>
+          ${f('area', 'เนื้อที่ (ตารางเมตร)', 'f-red', num)}
+          ${f('start', 'วันเริ่มเช่า', 'f-red', 'type="date"')}${f('end', 'วันสิ้นสุดสัญญา', 'f-red', 'type="date"')}
+          <div>${f('rent', 'ค่าเช่า/เดือน (บาท)', 'f-red', num).slice(5, -6)}<div class="auto" id="c-words"></div></div>
+          ${f('dueDay', 'ชำระภายในวันที่ (ของทุกเดือน)', 'f-red', 'inputmode="numeric"')}
+          <div class="full">${f('penalty', 'ค่าปรับต่อเดือน กรณีไม่ขนย้ายออกเมื่อสิ้นสุดสัญญา (บาท)', 'f-red', num).slice(5, -6)}<div class="auto">ตั้งต้น = ค่าเช่า 1 เดือน ตามสัญญาเดิม</div></div>
+          ${f('deposit', 'เงินประกันความเสียหาย (บาท)', 'f-blue', num)}${f('clean', 'เงินประกันการทำความสะอาด (บาท)', 'f-blue', num)}
+          <div class="full"><label class="l">รวมเงินประกัน (ข้อ 3)</label><input class="f-red" id="c-total" disabled></div>
+        </div></div>
+      <div class="sec"><h4>💧⚡ 3. ค่าน้ำ ค่าไฟ (ข้อ 8)</h4>
+        <div class="g2">
+          ${f('wRate', 'ค่าน้ำ บาท/หน่วย', 'f-blue', num)}${f('wMinUnits', 'ค่าน้ำขั้นต่ำ: 0 ถึง (หน่วย)', 'f-blue', 'inputmode="numeric"')}
+          ${f('wMinAmount', 'ค่าน้ำเหมาจ่ายขั้นต่ำ (บาท)', 'f-blue', num)}${f('eRate', 'ค่าไฟ บาท/หน่วย (ตั้งแต่ 21 หน่วย)', 'f-blue', num)}
+          <div class="full">${f('eTable', 'ตารางค่าไฟ 0–20 หน่วย (บาท 21 ค่า คั่นด้วย ,)', 'f-blue').slice(5, -6)}<div class="auto" id="c-etab"></div></div>
+          ${f('meterE', 'มิเตอร์ไฟเริ่มต้น', 'f-orange', 'inputmode="numeric"')}${f('meterW', 'มิเตอร์น้ำเริ่มต้น', 'f-lblue', 'inputmode="numeric"')}
+        </div></div>
+      <div class="sec"><h4>✍️ 4. ผู้ลงนาม</h4>
+        <div class="g2">
+          ${f('lessorSigner', 'กรรมการผู้มีอำนาจลงนาม (ฝ่ายผู้ให้เช่า)', 'f-blue', '', true)}
+          ${f('witness1', 'พยานคนที่ 1')}${f('witness2', 'พยานคนที่ 2')}
+        </div></div>
+      <p class="note" style="margin:0 0 8px">แผนผังบริเวณ (เอกสารที่ 1) แนบท้ายสัญญาให้อัตโนมัติจากหน้า "ผังคลัง" พร้อมกรอบสีแดงที่คลังที่เช่า · ข้อความสัญญาตามแบบสัญญาเช่าคลังเดิม ควรให้ผู้รู้กฎหมายตรวจก่อนใช้จริง</p>
+      <div class="err" id="c-err"></div>
+    </div>
+    <div class="pv"><div class="zm" id="c-pv"><p class="note" style="padding:20px">กำลังสร้างตัวอย่างสัญญา…</p></div></div></div>
+    <div class="form-acts">
+      <button class="btn" id="c-x">ปิด</button><button class="btn" id="c-save">💾 บันทึก</button>
+      <button class="btn" id="c-word">📄 Word</button><button class="btn" id="c-pdf">📕 PDF</button><button class="btn pri" id="c-print">🖨️ พิมพ์</button>
+      <button class="btn line" id="c-line" ${M.lineLinkOf(C.room) ? '' : `title="คลัง ${esc(C.room)} ยังไม่ผูก LINE OA"`}>💬 ส่ง LINE</button></div>`, { wide: true, sticky: true });
+  box.style.maxWidth = '1320px'; box.style.width = '96vw';
+  const q = s => box.querySelector(s), inp = k => box.querySelector(`[data-k="${k}"]`);
+  const setVal = (k, v) => { C[k] = v; const el = inp(k); if (el) el.value = v; };
+  const docOf = (forLine = false) => K.build(C, t, { forLine });
+  let pvTimer, pvSeq = 0;
+  const preview = () => { clearTimeout(pvTimer); pvTimer = setTimeout(async () => { const seq = ++pvSeq, html = await K.pagesHtml(await docOf()); if (seq === pvSeq && q('#c-pv')) q('#c-pv').innerHTML = `<style>${K.previewCss()}</style>${html}`; }, 350); };
+  if (!document.getElementById('ct-font')) document.head.insertAdjacentHTML('beforeend', '<link id="ct-font" href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;600;700&display=swap" rel="stylesheet">');
+  const calc = () => {
+    const co = C.tenantType !== 'person';
+    box.querySelectorAll('#c-type button').forEach(b => b.classList.toggle('pri', b.dataset.t === (co ? 'company' : 'person')));
+    q('#c-nml').textContent = co ? 'ชื่อนิติบุคคล' : 'ชื่อ-นามสกุล ผู้เช่า';
+    q('#c-taxl').textContent = co ? 'เลขประจำตัวผู้เสียภาษี' : 'เลขประจำตัวประชาชน';
+    q('#c-addrl').textContent = co ? 'ที่ตั้งสำนักงานใหญ่' : 'ที่อยู่';
+    box.querySelectorAll('.co-only').forEach(d => d.hidden = !co);
+    const tot = K.total(C); q('#c-total').value = `${tot.toLocaleString('en-US')} บาท (${bahtText(tot)})`;
+    q('#c-words').textContent = Number(C.rent) ? bahtText(C.rent) : '';
+    const n = String(C.eTable || '').split(/[,\s]+/).filter(Boolean).length;
+    q('#c-etab').textContent = n === 21 ? 'ครบ 21 ค่า (0–20 หน่วย)' : `⚠️ มี ${n} ค่า ต้องมี 21 ค่า (0 ถึง 20 หน่วย)`;
+    preview();
+  };
+  let dirty = false;
+  q('#cf').addEventListener('input', e => {
+    const k = e.target.dataset.k; if (!k) return;
+    const before = C[k]; C[k] = e.target.value; dirty = true;
+    if (k === 'rent' && (!C.penalty || C.penalty === before)) setVal('penalty', C.rent);
+    if (k === 'start' && C.start) setVal('end', K.oneYearEnd(C.start));
+    calc();
+  });
+  box.querySelectorAll('#c-type button').forEach(b => b.onclick = () => { C.tenantType = b.dataset.t; dirty = true; calc(); });
+  q('#c-room')?.addEventListener('change', e => {
+    const r = db.get('rooms', e.target.value) || {}; C.room = t.room = e.target.value;
+    setVal('rent', String(Number(r.rent) || 0)); setVal('penalty', C.rent); setVal('area', r.area ? String(r.area) : C.area);
+    const last = M.readings(C.room)[0]; setVal('meterE', last?.e != null ? String(last.e) : ''); setVal('meterW', last?.w != null ? String(last.w) : '');
+    q('#c-title').innerHTML = title(); q('#c-line').title = M.lineLinkOf(C.room) ? '' : `คลัง ${C.room} ยังไม่ผูก LINE OA`; calc();
+  });
+  const save = async () => {
+    if (!String(C.tenantName).trim()) { q('#c-err').textContent = 'กรุณากรอกชื่อผู้เช่า'; inp('tenantName').focus(); return false; }
+    if (isNew && M.tenantOf(C.room)) { q('#c-err').textContent = `คลัง ${C.room} มีผู้เช่าแล้ว กรุณาเลือกคลังอื่น`; return false; }
+    const rec = { ...db.get('tenants', t.id) || t, room: C.room };
+    Object.assign(rec, { name: C.tenantName.trim(), phone: String(C.phone).trim(), address: String(C.tenantAddress || '').trim(),
+      taxId: C.tenantType !== 'person' ? String(C.tenantTaxId).trim() : '', idNo: C.tenantType === 'person' ? String(C.tenantTaxId).trim() : (rec.idNo || ''),
+      signer: String(C.tenantSigner || '').trim(), rent: Number(C.rent) || 0, deposit: (Number(C.deposit) || 0) + (Number(C.clean) || 0),
+      wRate: C.wRate === '' ? null : Number(C.wRate), eRate: C.eRate === '' ? null : Number(C.eRate),
+      contract: { ...C, savedAt: new Date().toISOString() } });
+    if (isNew) { rec.active = true; rec.since = C.start || C.date; }
+    await db.put('tenants', rec); t = rec;
+    if (isNew) { isNew = false; q('#c-title').innerHTML = title(); const s = q('#c-room'); if (s) s.disabled = true; toast(`บันทึกผู้เช่าคลัง ${rec.room} แล้ว`); }
+    q('#c-err').textContent = ''; dirty = false; return true;
+  };
+  const busy = async (btn, label, fn) => { const old = btn.textContent; btn.disabled = true; btn.textContent = label;
+    try { if (await save()) await fn(); } catch (e) { toast('ทำไม่สำเร็จ: ' + e.message, 5000); } finally { if (btn.isConnected) { btn.disabled = false; btn.textContent = old; } } };
+  q('#c-x').onclick = () => { if (dirty && !window.confirm('ยังไม่ได้บันทึกข้อมูลในหน้าต่างนี้\nปิดโดยไม่บันทึกใช่ไหม?')) return; closeModal(); done?.(); };
+  q('#c-save').onclick = () => busy(q('#c-save'), 'กำลังบันทึก…', async () => toast('บันทึกสัญญาแล้ว'));
+  q('#c-print').onclick = () => busy(q('#c-print'), 'กำลังเตรียม…', async () => K.printContract(await docOf()));
+  q('#c-pdf').onclick = () => busy(q('#c-pdf'), 'กำลังสร้าง PDF…', async () => { const pdf = await K.contractPdf(await docOf()); K.download(pdf.output('blob'), K.fileName(C, 'pdf')); toast('ดาวน์โหลด PDF แล้ว'); });
+  q('#c-word').onclick = () => busy(q('#c-word'), 'กำลังสร้าง Word…', async () => { K.download(await K.contractDocx(await docOf()), K.fileName(C, 'docx')); toast('ดาวน์โหลดไฟล์ Word แล้ว'); });
+  q('#c-line').onclick = () => busy(q('#c-line'), 'กำลังส่ง LINE…', async () => {
+    const r = await K.sendContractLine(C, t);
+    const rec = db.get('tenants', t.id); if (rec) await db.put('tenants', { ...rec, contract: { ...rec.contract, lineSentAt: new Date().toISOString(), pdfUrl: r.pdfUrl || '' } });
     toast(r.sent ? `ส่งสัญญาเข้า LINE คลัง ${C.room} แล้ว` : `คลัง ${C.room} ยังไม่ผูก LINE OA — เก็บ PDF ไว้ใน Drive แล้ว`, 4000);
   });
   calc();

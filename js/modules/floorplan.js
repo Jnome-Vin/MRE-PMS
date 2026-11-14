@@ -60,8 +60,67 @@ function detail(id) {
     : `<button class="btn pri" data-a="in">+ ผู้เช่าเข้าใหม่</button>${r.kind !== 'room' ? '<button class="btn" data-a="bill">บิล/มิเตอร์</button>' : ''}${M.pastTenantsOf(id)[0] ? `<button class="btn" data-a="undo" title="ใช้เมื่อกดย้ายออกผิด">↩ ยกเลิกการย้ายออก (${esc(M.pastTenantsOf(id)[0].name)})</button>` : ''}${M.pastTenantsOf(id)[0]?.moveOutDoc ? '<button class="btn" data-a="refund">🖨️ เอกสารคืนเงิน</button>' : ''}`}</div>`;
 }
 
+// ---------- การ์ดข้อมูลเมื่อชี้เมาส์ที่หน่วยเช่าบนผัง (ข้อมูลผู้เช่า + สัญญาที่บันทึกไว้) ----------
+// แสดงเฉพาะเมาส์ (มือถือ/แท็บเล็ตใช้การแตะ → แผงรายละเอียดด้านข้างเหมือนเดิม) · อ่านผ่าน db/model จึงเคารพสิทธิ์การมองเห็น
+const addMonths = (iso, n) => { const d = new Date(iso); if (isNaN(d) || !Number(n)) return ''; d.setMonth(d.getMonth() + Number(n)); return d.toISOString().slice(0, 10); };
+function hoverHtml(id) {
+  const r = db.get('rooms', id); if (!r) return '';
+  const t = M.tenantOf(id), st = M.roomState(r), c = t?.contract || {};
+  const head = `<div class="hv-h"><b>${UNIT} ${esc(id)}</b><span class="pill ${M.ROOM_TXT[st][1]}">${M.ROOM_TXT[st][0]}</span></div>`;
+  if (!t) return head + `<div class="hv-e">ว่าง · คลิก แล้วกด "+ ผู้เช่าเข้าใหม่" เพื่อทำและพิมพ์สัญญา</div>`;
+  const start = c.date || t.since, end = addMonths(start, c.minMonths);
+  const row = (k, v) => v ? `<dt>${k}</dt><dd>${v}</dd>` : '';
+  return head + `<dl>${row('ผู้เช่า', esc(c.tenantName || t.name || ''))}${row('โทร', esc(t.phone || c.phone || ''))}`
+    + (c.kind === 'wh'   // สัญญาเช่าคลัง: เลขที่สัญญา + ระยะเวลาเช่า
+      ? `${row('เลขที่สัญญา', esc(c.contractNo || ''))}${row('ระยะเวลาเช่า', c.start ? `${thDate(c.start)} – ${thDate(c.end)}` : '')}${row('เนื้อที่', Number(c.area) ? `${fmt0(c.area)} ตร.ม.` : '')}`
+      : `${row('วันทำสัญญา', start ? thDate(start) : '')}${row('สัญญาขั้นต่ำ', Number(c.minMonths) ? `${esc(c.minMonths)} เดือน${end ? ` · ถึง ${thDate(end)}` : ''}` : '')}`)
+    + `${row('ค่าเช่า', `฿${fmt0(t.rent ?? c.rent)} / เดือน`)}${row('เงินประกัน', Number(t.deposit) ? `฿${fmt0(t.deposit)}` : '')}</dl>`
+    + (t.contract ? '' : '<div class="hv-e">ยังไม่ได้บันทึกสัญญาในระบบ</div>');
+}
+function bindHover(el) {
+  const fp = el.querySelector('#fp'); if (!fp) return;
+  const tip = document.createElement('div'); tip.className = 'fp-tip'; tip.hidden = true; tip.setAttribute('role', 'tooltip'); fp.appendChild(tip);
+  const place = e => {
+    const R = fp.getBoundingClientRect(); let x = e.clientX - R.left + 14, y = e.clientY - R.top + 14;
+    if (x + tip.offsetWidth > R.width) x = Math.max(0, e.clientX - R.left - tip.offsetWidth - 14);
+    if (y + tip.offsetHeight > R.height) y = Math.max(0, e.clientY - R.top - tip.offsetHeight - 14);
+    tip.style.left = x + 'px'; tip.style.top = y + 'px';
+  };
+  fp.querySelectorAll('.fp-room').forEach(n => {
+    n.removeAttribute('title');   // การ์ดนี้แทน tooltip เดิมของเบราว์เซอร์
+    n.addEventListener('pointerenter', e => { if (e.pointerType !== 'mouse') return; tip.innerHTML = hoverHtml(n.dataset.room); tip.hidden = false; place(e); });
+    n.addEventListener('pointermove', e => { if (!tip.hidden) place(e); });
+    n.addEventListener('pointerleave', () => { tip.hidden = true; });
+  });
+}
+
+// ชื่อหน่วยบนผังที่มีรูปพื้นหลัง: ขนาดเดียวกันทุกหน่วย = ขนาดใหญ่ที่สุดที่ทุกหน่วยยังไม่ล้นพื้นที่ของตัวเอง (คำนวณใหม่เมื่อหน้าจอเปลี่ยนขนาด)
+let fitRO = null;
+function fitLabels(el) {
+  fitRO?.disconnect(); fitRO = null;
+  const fp = el.querySelector('#fp.has-img'); if (!fp) return;
+  const run = () => {
+    const rooms = [...fp.querySelectorAll('.fp-room')]; if (!rooms.length) return;
+    fp.style.setProperty('--fp-no', '100px');
+    let k = Infinity;
+    for (const n of rooms) {
+      const no = n.querySelector('.no'); if (!no || !no.scrollWidth) continue;
+      const cs = getComputedStyle(n);
+      const w = n.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      const h = n.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+      k = Math.min(k, (w * 0.9) / no.scrollWidth, (h * 0.5) / no.scrollHeight);   // ครึ่งบนของความสูงให้ชื่อหน่วย ที่เหลือให้ชื่อผู้เช่า
+    }
+    if (!isFinite(k)) return;
+    const px = Math.max(10, Math.min(34, Math.floor(100 * k)));
+    fp.style.setProperty('--fp-no', px + 'px');
+    fp.style.setProperty('--fp-nm', Math.max(10, Math.round(px * 0.55)) + 'px');
+  };
+  run();
+  fitRO = new ResizeObserver(run); fitRO.observe(fp);
+}
+
 // ---------- ผัง ----------
-const pos = b => `left:${b[0]}%;top:${b[1]}%;width:${b[2]}%;height:${b[3]}%`;
+const pos = b => `left:${b[0]}%;top:${b[1]}%;width:${b[2]}%;height:${b[3]}%${b[4] ? `;transform:rotate(${b[4]}deg)` : ''}`;
 const floorsCfg = () => draft || L.get().floors || {};
 const floorCfg = f => floorsCfg()[String(f)] || null;
 const floorName = f => floorCfg(f)?.name || `${FLOOR} ${f}`;
@@ -194,6 +253,8 @@ export default {
     if (draft) return bindEdit(el, re);
 
     el.querySelectorAll('[data-room]').forEach(b => b.onclick = () => { sel = b.dataset.room; re(); });
+    bindHover(el);
+    fitLabels(el);
     el.querySelectorAll('[data-slot]').forEach(b => b.onclick = () => nav.go('parking', { highlight: [b.dataset.slot] }));
     const t = sel && M.tenantOf(sel);
     if (t?.idPhoto) photoThumb(t.idPhoto).then(h => { const d = el.querySelector('#idthumb'); if (d) d.innerHTML = h; });

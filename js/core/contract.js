@@ -10,6 +10,8 @@ import { esc, bahtText } from './ui.js';
 import { asset, pdfLibs } from './docs.js';
 import { printInFrame } from './printframe.js';
 import { zip, dataUrlBytes } from './zip.js';
+import * as L from './layout.js';
+import { SITE } from '../../site.js';
 
 // ชื่อ/ที่อยู่ผู้ให้เช่า และบัญชีรับเงิน มาจาก ตั้งค่า → ข้อมูลโครงการ
 const PN = en => { const p = M.property(); return (en ? p.nameEn || p.name : p.name) || ''; };
@@ -60,7 +62,7 @@ export function defaults(t) {
   };
 }
 const extraList = C => (C.extras || []).filter(x => has(x.name) || has(x.amt));
-export const total = C => ['firstAmount', 'deposit', 'clean', 'fridgeFee', 'motoFee'].reduce((a, k) => a + (Number(C[k]) || 0), 0) + extraList(C).reduce((a, x) => a + (Number(x.amt) || 0), 0);
+export const total = C => C.kind === 'wh' ? (Number(C.deposit) || 0) + (Number(C.clean) || 0) : ['firstAmount', 'deposit', 'clean', 'fridgeFee', 'motoFee'].reduce((a, k) => a + (Number(C[k]) || 0), 0) + extraList(C).reduce((a, x) => a + (Number(x.amt) || 0), 0);
 
 // ---------- บล็อกเนื้อหา ----------
 // run: { t: ข้อความ, c: สี, b, i, u, dots: จำนวนจุด (ช่องว่าง), nw: ห้ามตัดบรรทัด (กลุ่ม) }
@@ -182,6 +184,120 @@ function contentEN(C, x) {
   ];
 }
 
+// ---------- สัญญาเช่าคลังสินค้า (โครงการประเภท "คลัง/โกดัง") — ตามแบบสัญญาเช่าคลังของเจ้าของ 18 ข้อ ----------
+export const WH = SITE.kind === 'warehouse';
+const isoOf = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+export const oneYearEnd = start => { const [y, m, d] = String(start).split('-').map(Number); if (!y) return ''; const e = new Date(y + 1, m - 1, d); e.setDate(e.getDate() - 1); return isoOf(e); };
+// ค่าไฟขั้นต่ำ 0–20 หน่วย (บาท) ตามตารางในสัญญาเดิม · ตั้งแต่ 21 หน่วยคิดตามอัตราปกติ
+export const E_TABLE = '50,55,60,65,70,75,80,85,90,95,100,102,104,106,108,110,114,116,118,120,124';
+export function defaultsWH(t) {
+  const room = db.get('rooms', t.room) || {}, rt = M.roomRates(room, t), rent = Number(t.rent ?? room.rent) || 0, p = M.property();
+  const iso = isoOf(new Date()), start = t.since || iso, last = M.readings(t.room)[0];
+  const prev = db.all('tenants').map(x => x.contract).filter(c => c && c.kind === 'wh').sort((a, b) => String(b.savedAt).localeCompare(String(a.savedAt)))[0] || {};
+  return {
+    kind: 'wh', lang: 'th', date: iso, contractNo: '', room: t.room, area: room.area ? String(room.area) : '',
+    tenantType: t.taxId || !t.idNo ? 'company' : 'person', tenantName: t.name || '', tenantTaxId: t.taxId || t.idNo || '', tenantAddress: t.address || '',
+    tenantSigner: t.signer || '', phone: t.phone || '',
+    lessorSigner: p.signer || prev.lessorSigner || '', witness1: prev.witness1 || '', witness2: '',
+    start, end: oneYearEnd(start), rent: String(rent), penalty: String(rent), dueDay: String(M.rates().dueDay || 5),
+    deposit: String(Number(t.deposit) || rent * 2), clean: '3000',
+    wRate: String(rt.water ?? 17), wMinUnits: '10', wMinAmount: '160', eRate: String(rt.elec ?? 7), eTable: E_TABLE,
+    meterE: last?.e != null ? String(last.e) : '', meterW: last?.w != null ? String(last.w) : '', photos: [],
+  };
+}
+// ที่อยู่โครงการแบบไม่มีเลขที่ (ใช้ต่อท้ายเลขคลัง เช่น "450/1D ถนนเจริญพัฒนา ...")
+const siteStreet = () => ADDR().replace(/^\s*(เลขที่\s*)?[\d/\-]+\s*/, '');
+
+function contentWH(C, x) {
+  const p = M.property(), co = C.tenantType !== 'person';
+  const money2b = v => money2(v), dep = Number(C.deposit) || 0, cln = Number(C.clean) || 0, tot = dep + cln;
+  const et = String(C.eTable || E_TABLE).split(/[,\s]+/).filter(Boolean);
+  const eRows = Array.from({ length: 11 }, (_, i) => i < 10
+    ? [String(i), et[i] ?? '', String(11 + i), et[11 + i] ?? '']
+    : ['10', et[10] ?? '', 'ตั้งแต่ 21 หน่วยขึ้นไป', `คิดตามอัตราปกติ หน่วยละ ${money2(C.eRate)}`]);
+  const lessee = co
+    ? [NW(V(C.tenantName, 'blue', 40)), T(' เลขประจำตัวผู้เสียภาษี '), NW(V(C.tenantTaxId, 'blue', 22)), T(' สำนักงานใหญ่ตั้งอยู่เลขที่ '), V(C.tenantAddress, 'blue', 60), T(' โดย '), NW(V(C.tenantSigner, 'blue', 30)), T(' กรรมการผู้มีอำนาจลงนาม')]
+    : [NW(V(C.tenantName, 'blue', 40)), T(' เลขประจำตัวประชาชน '), NW(V(C.tenantTaxId, 'blue', 22)), T(' อยู่บ้านเลขที่ '), V(C.tenantAddress, 'blue', 60)];
+  return [
+    { k: 'title', title: 'สัญญาเช่าคลังสินค้า', room: C.room },
+    { k: 'row2', l: [B('เลขที่สัญญา : '), { ...V(C.contractNo, 'blue', 20), b: 1 }], r: [T('วันที่ '), V(fDate(C.date), 'blue', 24)], sp: 1 },
+    { k: 'p', runs: [T('ทำที่ ' + ADDR())] },
+    { k: 'p', in: 1, sp: 1, runs: [T('สัญญานี้ทำขึ้นระหว่าง ' + PN() + (p.taxId ? ' เลขประจำตัวผู้เสียภาษี ' + p.taxId : '') + ' สำนักงานใหญ่ตั้งอยู่เลขที่ ' + ADDR() + ' โดย '), NW(V(C.lessorSigner, 'blue', 30)),
+      T(' กรรมการผู้มีอำนาจลงนาม ซึ่งต่อไปในสัญญาเรียกว่า “ผู้ให้เช่า” ฝ่ายหนึ่ง กับ '), ...lessee, T(' ซึ่งต่อไปจะเรียกว่า “ผู้เช่า” อีกฝ่ายหนึ่ง คู่สัญญาทั้งสองฝ่ายตกลงทำ “สัญญาเช่า” โดยมีเงื่อนไขและรายละเอียดที่สำคัญดังต่อไปนี้')] },
+    { k: 'p', in: 1, sp: 1, runs: [B('ข้อที่ 1. '), T('ผู้ให้เช่าตกลงให้เช่า และผู้เช่าตกลงเช่าอาคารคลังสินค้าซึ่งตั้งอยู่ ณ เลขที่ '), C_(C.room, 'red'), T(' ' + siteStreet() + ' เนื้อที่คลังสินค้าโดยประมาณ '), V(C.area, 'red', 8, money), T(' ตารางเมตร ถนนทางเข้า - ออก และลานจอดรถผู้เช่าสามารถใช้ได้ รายละเอียดปรากฏแผนผังบริเวณแนบท้ายสัญญานี้ (เอกสารที่ 1) ซึ่งถือว่าเป็นส่วนหนึ่งของสัญญาเช่าฉบับนี้ ด้วยกำหนดระยะเวลาการเช่า นับตั้งแต่วันที่ '), NW(V(fDate(C.start), 'red', 22)), T(' และสิ้นสุดสัญญาวันที่ '), NW(V(fDate(C.end), 'red', 22))] },
+    { k: 'p', in: 1, runs: [T('เมื่อครบกำหนดระยะเวลาเช่าตามสัญญาแล้ว หรือในกรณีที่ผู้เช่าประพฤติผิดสัญญาเช่าผู้ให้เช่าบอกเลิกสัญญาแล้ว หากผู้เช่ายังไม่ขนย้ายทรัพย์สินออกไปจากสถานที่เช่าพร้อมทั้งส่งมอบพื้นที่แก่ผู้ให้เช่า ผู้เช่ายินยอมเสียค่าปรับให้แก่ผู้ให้เช่าเป็นรายเดือน เดือนละ '), NW(V(C.penalty, 'red', 10, money2b), T(' บาท')), T(' '), NW(T('('), V(C.penalty, 'red', 20, bahtText), T(')')), T(' เรื่อยไปจนกว่าผู้เช่าจะส่งมอบสถานที่เช่าคืนแก่ผู้ให้เช่าในสภาพที่เรียบร้อย')] },
+    { k: 'p', in: 1, runs: [T('ในระหว่างสัญญานี้มีผลบังคับใช้อยู่ หากเกิดเหตุสุดวิสัยจนเป็นเหตุให้สัญญานี้ไม่อาจปฏิบัติต่อกันได้แล้ว เช่น ภัยจากธรรมชาติ หรือกรณีที่ดินที่ตั้งอาคารถูกทางราชการเวนคืนเพื่อสาธารณประโยชน์ แล้วสัญญานี้ถือว่าสิ้นสุดหรือระงับไปทันที โดยผู้เช่าจะเรียกร้องค่าเสียหายใดจากผู้ให้เช่าไม่ได้ทั้งสิ้น ยกเว้นกรณีอาคารเกิดความเสียหายจากผู้เช่า ผู้เช่ายังคงต้องจ่ายค่าเช่าอาคารดังกล่าวจนกว่าจะซ่อมแซมเสร็จ')] },
+    { k: 'p', in: 1, sp: 1, runs: [B('ข้อที่ 2. '), T('คู่สัญญาตกลงกำหนดชำระค่าเช่าเป็นรายเดือน โดยมีรายละเอียดดังนี้คือ อัตราค่าเช่าเดือนละ '), NW(V(C.rent, 'red', 10, money2b), T(' บาท')), T(' '), NW(T('('), V(C.rent, 'red', 20, bahtText), T(')')),
+      T(' ผู้เช่าชำระโดยวิธีการโอนเงินเข้าบัญชี '), B(BANK()), T(' โดยผู้เช่าจะชำระค่าเช่าภายในวันที่ '), V(C.dueDay, 'red', 4), T(' ของทุกเดือน โดยผู้เช่าต้องเป็นผู้ดำเนินการโอนเงินเข้าบัญชีเอง หากมีค่าใช้จ่ายในการดำเนินการใด ๆ ผู้เช่าต้องรับภาระดังกล่าวเอง')] },
+    { k: 'page', flow: 1 },
+    { k: 'p', in: 1, runs: [T('ผู้ให้เช่าตกลงยินยอมให้ผู้เช่าหักภาษี ณ ที่จ่าย ออกจากค่าเช่าที่ผู้เช่าจะต้องชำระให้แก่ผู้ให้เช่าในแต่ละครั้งได้ แล้วจะชำระค่าเช่าส่วนที่เหลือให้แก่ผู้ให้เช่า และผู้เช่าจะออกหนังสือรับรองการหักภาษี ณ ที่จ่ายให้แก่ผู้ให้เช่าในวันชำระค่าเช่า และจะทำการจัดส่งมายังสำนักงานของผู้ให้เช่า โดยหากส่งทางไปรษณีย์ต้องทำการลงทะเบียน เมื่อผู้ให้เช่าได้รับค่าเช่าและหนังสือรับรองการหักภาษี ณ ที่จ่ายจากผู้เช่าแล้ว ผู้ให้เช่าตกลงส่งมอบใบเสร็จรับเงินให้แก่ผู้เช่า ณ สำนักงานของผู้เช่า โดยหากส่งทางไปรษณีย์ต้องทำการลงทะเบียน')] },
+    { k: 'p', in: 1, runs: [B('ข้อที่ 3. '), T('เพื่อเป็นการประกันความเสียหายจากการประพฤติผิดสัญญา “ผู้เช่า” ตกลงวางเงินประกันเป็นจำนวนทั้งสิ้น '), NW(C_(money2(tot), 'red'), T(' บาท')), T(' '), NW(T('('), C_(bahtText(tot), 'red'), T(')')), T(' ประกอบด้วย')] },
+    { k: 'items', word: '', unit: 'บาท', rows: [['-', [T('เงินประกันความเสียหาย')], has(C.deposit) ? C_(money2(dep), 'blue') : D(8)],
+      ['-', [T('เงินประกันการทำความสะอาด กวาด ถู ไม่มีคราบกาว หรืออันใดที่ต้องใช้สารพิเศษ')], has(C.clean) ? C_(money2(cln), 'blue') : D(8)],
+      ['', [B('รวมเป็นจำนวนเงิน')], { ...C_(money2(tot), 'red'), b: 1 }]] },
+    { k: 'p', in: 1, runs: [T('หากผู้เช่าไม่ชำระค่าเช่าหรือประพฤติผิดสัญญาข้อหนึ่งข้อใดและทำให้ผู้ให้เช่าได้รับความเสียหายด้วยประการใด ๆ ผู้เช่ายินยอมให้ผู้ให้เช่าหักเงินประกันจำนวนนี้ได้ เพื่อชดใช้ความเสียหายที่ผู้ให้เช่าได้รับตามจำนวนความเสียหายที่แท้จริง หากมีเงินประกันเหลืออยู่อีกเท่าใด ผู้ให้เช่าจะต้องคืนให้แก่ผู้เช่าหลังจากที่ผู้เช่าส่งมอบสถานที่เช่าคืนให้แก่ผู้ให้เช่าเป็นที่เรียบร้อย')] },
+    { k: 'p', in: 1, runs: [EM('เงินประกันการเช่านี้ ใช้สำหรับเป็นประกันความเสียหายของสินทรัพย์เท่านั้น ไม่สามารถใช้หักเป็นค่าเช่าได้ทุกกรณี')] },
+    { k: 'p', in: 1, runs: [T('ในระหว่างอายุสัญญาเช่า หากมีเหตุที่ทำให้ผู้ให้เช่ามีสิทธิหักเงินประกันดังกล่าว ผู้ให้เช่าจะต้องแจ้งถึงเหตุแห่งการหักเงินประกันนั้น ๆ และจำนวนค่าเสียหายที่เกิดขึ้นให้ผู้เช่าทราบเป็นหนังสือ หากผู้เช่ามิทักท้วงภายใน 7 วัน นับแต่วันที่ได้รับแจ้งถึงเหตุแห่งความเสียหายนั้น ให้ถือว่าผู้เช่ายินยอม เมื่อผู้ให้เช่าได้หักเงินประกันเพื่อชดใช้ค่าเสียหายแล้ว ผู้ให้เช่าจะแจ้งให้ผู้เช่าจัดหาเงินประกันมาวางเพิ่มต่อผู้ให้เช่าให้ครบตามที่ได้ระบุไว้ในสัญญาฉบับนี้')] },
+    { k: 'p', in: 1, runs: [T('เมื่อสัญญาเช่าสิ้นสุดลงไม่ว่ากรณีใดก็ตาม และหากผู้เช่ามิได้ประพฤติผิดสัญญาเช่าหรือก่อให้เกิดความเสียหายใด ๆ แก่ผู้ให้เช่าแล้ว ผู้ให้เช่าจะต้องคืนเงินประกันจำนวนนี้ทั้งหมดแก่ผู้เช่าภายหลังจากที่ผู้เช่าส่งมอบสถานที่เช่าคืนให้แก่ผู้ให้เช่าเป็นที่เรียบร้อยภายใน 15 วัน')] },
+    { k: 'p', in: 1, sp: 1, runs: [B('ข้อที่ 4. '), T('ผู้เช่าทรงไว้ซึ่งสิทธิที่จะใช้ประโยชน์จากสถานที่เช่าเต็มจำนวนเนื้อที่และปริมาณที่ตกลงเช่าตามความในข้อ 1. ทั้งนี้รวมทั้งทางเข้าออกของยานพาหนะที่จะทำการขนถ่ายสินค้าของผู้เช่าด้วย')] },
+    { k: 'page', flow: 1 },
+    { k: 'p', in: 1, runs: [B('ข้อที่ 5. '), T('ผู้เช่าไม่มีสิทธินำสินค้าซึ่งต้องห้ามตามกฎหมายไม่ว่าด้วยกรณีใดมาเก็บไว้ในสถานที่เช่านี้ ผู้เช่าไม่มีสิทธินำวัตถุระเบิดหรือวัตถุอันตรายไม่ว่าจะโดยสภาพหรือลักษณะใดก็ตามมาเก็บไว้ในสถานที่เช่า เว้นแต่จะได้รับความยินยอมจากผู้ให้เช่าเป็นหนังสือแล้ว และหากผู้ให้เช่าตรวจพบสินค้าดังกล่าวข้างต้นรวมทั้งสินค้าที่ต้องห้ามตามกฎหมายด้วย ผู้ให้เช่ามีสิทธิที่จะทำลาย จำหน่าย หรือจัดการอย่างใดอย่างหนึ่งตามที่ผู้ให้เช่าเห็นสมควร โดยคิดค่าใช้จ่าย และหากผู้ให้เช่าได้รับความเสียหายจากวัตถุนั้นด้วยประการใด ๆ ผู้เช่าจะต้องรับผิดชอบชดใช้ค่าเสียหายให้แก่ผู้ให้เช่าด้วย')] },
+    { k: 'p', in: 1, runs: [T('ในกรณีที่การเก็บรักษาสินค้าใดในสถานที่เช่าจะต้องได้รับอนุญาตจากทางราชการหรือหน่วยงานของรัฐหรือรัฐวิสาหกิจ หรือจำต้องแจ้งปริมาณสินค้าเช่นว่านั้นก่อน ผู้เช่าจะต้องดำเนินการดังกล่าวข้างต้นจนได้รับอนุญาตจากทางราชการแล้ว จึงจะมีสิทธินำสินค้าเข้ามาเก็บในสถานที่เช่าได้ หากผู้เช่าไม่ได้ดำเนินการดังกล่าวให้ถูกต้อง ผู้ให้เช่ามีสิทธิดำเนินการดังกล่าวข้างต้นในวรรคก่อนแห่งสัญญาข้อนี้ได้')] },
+    { k: 'p', in: 1, runs: [B('ข้อที่ 6. '), T('ผู้ให้เช่าได้ส่งมอบสถานที่เช่าในสภาพที่เรียบร้อยดี และผู้เช่าจะไม่ทำการเปลี่ยนแปลง ดัดแปลง หรือเพิ่มเติมใหม่ในลักษณะที่ติดตรึงในสถานที่เช่านี้ ไม่ว่าจะได้รับอนุญาตจากผู้ให้เช่าหรือไม่ก็ตาม ให้ถือเป็นกรรมสิทธิ์ของผู้ให้เช่าทั้งสิ้น โดยผู้เช่าจะเรียกร้องใด ๆ จากผู้ให้เช่าไม่ได้ เว้นแต่จะมีข้อตกลงอื่นใดกำหนดไว้เป็นลายลักษณ์อักษรโดยชัดแจ้ง ผู้เช่ามีสิทธิที่จะนำชั้นวางสินค้าที่ไม่ติดตรึงกับอาคาร รวมทั้งที่กั้นห้องที่ไม่ติดตรึง หรืออุปกรณ์อื่นใดที่จำเป็นเข้าติดตั้งในสถานที่เช่าได้ โดยผู้เช่าจะนำเข้าหรือออกนอกสถานที่เช่าได้ตลอดเวลาโดยมิต้องได้รับความยินยอมจากผู้ให้เช่า')] },
+    { k: 'p', in: 1, sp: 1, runs: [B('ข้อที่ 7. '), T('ผู้เช่าสัญญาว่าจะเป็นผู้ดูแลทรัพย์สินต่าง ๆ ของผู้เช่าและบริวารด้วยตนเอง รวมทั้งสัญญาว่าจะดูแลอาคารที่เช่าในข้อ 1. เฉกเช่นวิญญูชนพึงปฏิบัติต่อทรัพย์สินของตนเอง ซึ่งหากเกิดความเสียหายใด ๆ ในอาคารที่เช่าระหว่างการเช่า ผู้เช่าขอรับผิดชอบซ่อมแซมให้มีสภาพดังเดิม และจะดูแล ควบคุม รักษาความสะอาด จัดคัดแยกขยะมูลฝอยก่อนทิ้งตามจุดที่ผู้ให้เช่ากำหนดไว้ดังนี้')] },
+    { k: 'p', ind: 1, runs: [B('- ขยะทั่วไป '), T('ขยะมูลฝอยที่ย่อยสลายได้ยาก ไม่คุ้มค่าการรีไซเคิล สามารถนำไปเผาได้ไม่เป็นพิษ เช่น ถุง หลอด ถุงขนม ทิชชู โฟม พลาสติกใส่อาหาร กล่องอาหาร เป็นต้น ใส่ถุงพลาสติกสีดำ / สีใส')] },
+    { k: 'p', ind: 1, runs: [B('- ขยะเปียก '), T('ขยะมูลฝอยที่เน่าเสียและย่อยสลายเร็ว เช่น เศษอาหาร เศษผักผลไม้ ใบไม้ เป็นต้น ใส่ถุงพลาสติกสีเขียว / สีใส')] },
+    { k: 'p', ind: 1, runs: [B('- ขยะรีไซเคิล '), T('ขยะมูลฝอยที่สามารถนำมารีไซเคิลหรือจำหน่ายได้ เช่น แก้ว กระดาษ เศษโลหะ ขวดพลาสติก เป็นต้น ใส่ถุงพลาสติกสีเหลือง / สีใส')] },
+    { k: 'p', ind: 1, runs: [B('- ขยะอันตราย '), T('ขยะมูลฝอยที่มีอันตรายต่อชีวิตและสิ่งแวดล้อม เช่น หลอดไฟ กระป๋องสเปรย์ ถ่านไฟฉาย แบตเตอรี่ เป็นต้น ใส่ถุงพลาสติกสีแดง / สีใส')] },
+    { k: 'page', flow: 1 },
+    { k: 'p', in: 1, runs: [T('สำหรับขยะที่มีขนาดใหญ่หรือขยะพิเศษต่าง ๆ ที่ทางเทศบาลไม่สามารถจัดการได้ ผู้เช่าต้องดำเนินการกำจัดขยะดังกล่าวให้หมดไป ทั้งภายในตัวอาคารและบริเวณรอบข้าง สถานที่เช่าต้องปราศจากเสียงและกลิ่นอันจะก่อให้เกิดความไม่เหมาะสม หรือก่อให้เกิดความเดือดร้อนต่อบริเวณพื้นที่ข้างเคียงและบุคคลอื่น')] },
+    { k: 'p', in: 1, runs: [T('ตลอดระยะเวลาการเช่า ผู้เช่ายินยอมให้ผู้ให้เช่าหรือตัวแทนของผู้ให้เช่าเข้าตรวจดูทรัพย์สินของผู้เช่าและสถานที่เช่าเป็นครั้งคราวในระยะเวลาอันสมควร โดยต้องแจ้งให้ผู้เช่าทราบล่วงหน้า 7 วัน')] },
+    { k: 'p', in: 1, sp: 1, runs: [B('ข้อที่ 8. '), T('ค่าน้ำประปา ค่าไฟฟ้า ค่าโทรศัพท์ที่เกี่ยวกับการเช่าตามสัญญา มีเงื่อนไขดังต่อไปนี้')] },
+    { k: 'p', in: 1, runs: [T('8.1 ค่าน้ำประปา เป็นมิเตอร์ชั่วคราว คิดค่าน้ำประปาในอัตราหน่วยละ '), V(C.wRate, 'red', 6, money2b), T(' บาท ทั้งนี้หากผู้เช่าใช้น้ำประปาตั้งแต่ 0 - '), V(C.wMinUnits, 'red', 4), T(' หน่วยของมิเตอร์ ผู้เช่าตกลงที่จะจ่ายค่าน้ำในเดือนนั้น ๆ ให้แก่ผู้ให้เช่าตามรายละเอียดดังต่อไปนี้')] },
+    { k: 'grid', title: 'อัตราค่าน้ำประปา', head: ['ปริมาณน้ำใช้ ลูกบาศก์เมตร (หน่วย)', 'ค่าน้ำ (บาท)'],
+      rows: [[`0 – ${C.wMinUnits || '…'}`, `เหมาจ่าย ${money2(C.wMinAmount)} บาท`], [`ตั้งแต่หน่วยที่ ${(Number(C.wMinUnits) || 0) + 1} ขึ้นไป`, `หน่วยละ ${money2(C.wRate)} บาท`]] },
+    { k: 'p', in: 1, runs: [T('8.2 ค่าไฟฟ้า คิดค่าไฟฟ้าในอัตราหน่วยละ '), V(C.eRate, 'red', 6, money2b), T(' บาท ต่อเดือน ทั้งนี้หากผู้เช่าใช้กระแสไฟฟ้าตั้งแต่ 0 - 20 หน่วยของเครื่องวัด ผู้เช่าตกลงที่จะจ่ายค่าไฟฟ้าในเดือนนั้น ๆ ให้แก่ผู้ให้เช่าตามรายละเอียดดังต่อไปนี้')] },
+    { k: 'grid', title: 'อัตราค่ากระแสไฟฟ้า', head: ['หน่วย', 'บาท', 'หน่วย', 'บาท'], rows: eRows },
+    { k: 'page', flow: 1 },
+    { k: 'p', in: 1, runs: [T('8.3 ค่าโทรศัพท์ ผู้เช่าเป็นผู้รับผิดชอบในการขอและเป็นผู้ชำระค่าใช้จ่ายเอง ในกรณีที่มีการติดตั้งสายเคเบิล อินเทอร์เน็ต โทรศัพท์ เมื่อสิ้นสุดสัญญาเช่า ผู้เช่าจะรื้อถอนสายออกไป รวมทั้งปิดรูที่เจาะ ตอก หรือดำเนินการอื่นใดเพื่อยึดสายดังกล่าวให้ติดกับอาคารที่เช่า ให้อยู่ในสภาพเดิม')] },
+    { k: 'p', in: 1, sp: 1, runs: [B('ข้อที่ 9. '), T('ค่าภาษีที่ดินและสิ่งปลูกสร้าง “ผู้ให้เช่า” เป็นผู้รับผิดชอบ')] },
+    { k: 'p', in: 1, sp: 1, runs: [B('ข้อที่ 10. '), T('ผู้ให้เช่าไม่ต้องรับผิดชอบในทรัพย์สินของผู้เช่าไม่ว่ากรณีใด ๆ ทั้งสิ้น')] },
+    { k: 'p', in: 1, sp: 1, runs: [B('ข้อที่ 11. '), T('ผู้เช่าไม่มีสิทธินำสถานที่เช่าตามสัญญาให้บุคคลภายนอกเช่าช่วงต่อไปได้')] },
+    { k: 'p', in: 1, sp: 1, runs: [B('ข้อที่ 12. '), T('หากผู้เช่าผิดนัดไม่ชำระค่าเช่าให้ตรงตามเวลาที่ระบุไว้ในข้อ 2. แห่งสัญญานี้ ผู้ให้เช่าสามารถคิดดอกเบี้ยตามที่กฎหมายกำหนดไว้สูงสุดจากผู้เช่าได้ หรือถ้าในกรณีค้างชำระตั้งแต่ 1 งวดขึ้นไป ไม่ว่าจะติดต่อกันหรือไม่ก็ตาม ผู้ให้เช่ามีสิทธิบอกเลิกสัญญาเช่าสถานที่เก็บสินค้า โดยบอกกล่าวเป็นหนังสือให้ผู้เช่าทราบล่วงหน้าไม่น้อยกว่า 15 วัน โดยผู้ให้เช่ามีสิทธิหักค่าเช่า ค่าน้ำ ค่าไฟ และเงินที่ผู้เช่าค้างจ่ายอื่น ๆ จากเงินประกันในข้อที่ 3.')] },
+    { k: 'p', in: 1, sp: 1, runs: [B('ข้อที่ 13. '), T('นอกจากที่ระบุไว้ในข้อ 12. หากคู่สัญญาฝ่ายหนึ่งฝ่ายใดไม่ปฏิบัติตามสัญญานี้ข้อหนึ่งข้อใด โดยอีกฝ่ายได้แจ้งถึงการผิดสัญญา และคู่สัญญาฝ่ายที่ผิดสัญญาดังกล่าวยังคงดำเนินการใด ๆ ที่ผิดสัญญาไปเกินกว่า 30 วัน หลังจากวันที่ได้รับหนังสือแจ้งดังกล่าว คู่สัญญาฝ่ายที่มิได้ปฏิบัติผิดสัญญามีสิทธิบอกเลิกสัญญานี้ได้ทันที และในกรณีนี้หากผู้เช่ามิได้ทำความเสียหายใด ๆ แก่ผู้ให้เช่าแล้ว ผู้ให้เช่าจะต้องคืนเงินประกันตามข้อ 3. ให้แก่ผู้เช่าภายหลังจากที่ผู้เช่าส่งมอบสถานที่เช่าคืนให้แก่ผู้ให้เช่าเป็นที่เรียบร้อย')] },
+    { k: 'p', in: 1, runs: [T('ในกรณีที่ต้องซ่อมแซมอาคารที่ความเสียหายเกิดจากผู้เช่า เวลาที่ใช้ในการซ่อมแซมอาคารตามข้อที่ 1. ให้ถือว่าผู้เช่ายังคงต้องชำระค่าเช่าเพื่อทำการซ่อมแซมอาคารดังกล่าวเป็นรายเดือน')] },
+    { k: 'p', in: 1, sp: 1, runs: [B('ข้อที่ 14. '), T('ในกรณีที่ผู้เช่ามีความประสงค์ที่จะขอต่ออายุสัญญาเช่าใหม่เมื่อสิ้นสุดระยะเวลาเช่า ผู้เช่าจะต้องแสดงเจตนาขอทำสัญญาเช่าใหม่เป็นหนังสือล่วงหน้าก่อนสัญญาเช่านี้สิ้นสุดระยะเวลาการเช่าไม่น้อยกว่า 90 วัน หากผู้เช่ามิได้ดำเนินการดังกล่าว ให้ถือว่าผู้เช่าไม่ประสงค์ที่จะขอต่ออายุการเช่าอีกต่อไป และสัญญาเช่าเป็นอันระงับไปในทันทีที่ครบกำหนดการเช่าตามสัญญานี้')] },
+    { k: 'page', flow: 1 },
+    { k: 'p', in: 1, runs: [B('ข้อที่ 15. '), T('ในกรณีสัญญาเช่านี้สิ้นสุดลงแล้ว โดยมิได้มีการทำสัญญาเช่ากันใหม่ หรือเมื่อมีการบอกเลิกสัญญาเช่าโดยชอบ ผู้เช่าจะต้องขนทรัพย์สินออกจากสถานที่เช่า และส่งมอบสถานที่เช่าคืนให้แก่ผู้ให้เช่าทันทีที่สัญญานี้สิ้นสุดลง โดยผู้เช่าไม่มีสิทธิเรียกร้องค่าตอบแทนหรือเงินอื่นใดจากผู้ให้เช่าทั้งสิ้น และผู้เช่าจะคืนพื้นที่เช่าระหว่างเวลา 08.30 - 11.00 น. ในวันจันทร์ถึงวันศุกร์ ยกเว้นวันหยุดของผู้ให้เช่า')] },
+    { k: 'p', in: 1, sp: 1, runs: [B('ข้อที่ 16. '), T('ในกรณีที่คู่สัญญาต้องการแจ้ง บอกกล่าว หรือทวงถามตามสัญญาฉบับนี้ในเรื่องสำคัญ ให้ทำการแจ้งทางจดหมายเป็นหนังสือถึงคู่สัญญาอีกฝ่ายหนึ่ง โดยใช้ที่ตั้งสำนักงานที่ปรากฏในหนังสือรับรองบริษัท ณ วันทำสัญญา โดยจดหมายนั้นต้องลงทะเบียนตอบรับ และไม่ว่าจะมีผู้รับหรือไม่ ให้ถือว่าคู่สัญญาอีกฝ่ายหนึ่งได้รับทราบข้อความในหนังสือนั้นแล้ว ในกรณีคู่สัญญาย้ายที่ทำการต้องแจ้งให้คู่สัญญาอีกฝ่ายทราบเป็นลายลักษณ์อักษรภายใน 15 วัน นับแต่ทำเรื่องย้ายที่ตั้งสำนักงาน')] },
+    { k: 'p', in: 1, sp: 1, runs: [B('ข้อที่ 17. '), T('บุคคล รถยนต์ หรืออื่นใดที่เข้ามารับ-ส่งสินค้าหรือติดต่อกับผู้เช่า หากได้ทำความเสียหายให้กับอาคาร สิ่งปลูกสร้าง หรือสินทรัพย์ของผู้ให้เช่า ให้เป็นความรับผิดชอบของผู้เช่าในการดำเนินการให้คืนสู่สภาพเดิมโดยเร็ว')] },
+    { k: 'p', in: 1, sp: 1, runs: [B('ข้อที่ 18. '), T('ในกรณีที่ข้อตกลงส่วนใดส่วนหนึ่งของสัญญาฉบับนี้ตกเป็นโมฆะ หรือใช้บังคับไม่ได้ตามกฎหมาย หรือไม่สมบูรณ์ไม่ว่าด้วยเหตุประการใด ๆ ให้ถือว่าข้อตกลงในส่วนอื่น ๆ ยังคงมีผลบังคับใช้ผูกพันคู่สัญญา')] },
+    { k: 'p', in: 1, sp: 1, runs: [T('สัญญาฉบับนี้ได้ทำขึ้นเป็นสองฉบับ มีข้อความถูกต้องตรงกัน คู่สัญญาได้อ่านและเข้าใจข้อความในสัญญาฉบับนี้โดยตลอดแล้ว เพื่อเป็นหลักฐานคู่สัญญาจึงได้ลงลายมือชื่อและประทับตรา (ถ้ามี) ไว้เป็นสำคัญ ณ วัน เดือน ปี ที่ระบุไว้ข้างต้น')] },
+    { k: 'sign', sg: 'ลงชื่อ', roles: ['ผู้ให้เช่า', 'ผู้เช่า', 'พยาน', 'พยาน'], paren: [1, 1, 1, 1],
+      names: [C.lessorSigner, co ? C.tenantSigner : C.tenantName, C.witness1, C.witness2], subs: [PN(), co ? C.tenantName : '', '', ''] },
+    { k: 'meters', l: [C_('มิเตอร์ไฟเริ่มต้น ', 'orange'), V(C.meterE, 'orange', 14)], r: [C_('มิเตอร์น้ำเริ่มต้น ', 'lblue'), V(C.meterW, 'lblue', 14)] },
+    ...attachments(x, 'เอกสารแนบท้ายสัญญา'),
+  ];
+}
+// เอกสารที่ 1: แผนผังบริเวณ พร้อมกรอบแดงที่คลังที่เช่า (ใช้ผังเดียวกับหน้า "ผังคลัง")
+async function planImage(roomId) {
+  try {
+    const r = db.get('rooms', roomId), cfg = L.floorOf(r?.floor || 1), src = await L.imageSrc(cfg?.image);
+    if (!src) return '';
+    const img = await new Promise((ok, bad) => { const i = new Image(); i.onload = () => ok(i); i.onerror = bad; i.src = src; });
+    const c = document.createElement('canvas'); c.width = img.naturalWidth; c.height = img.naturalHeight;
+    const g = c.getContext('2d'); g.drawImage(img, 0, 0);
+    const b = cfg.boxes?.[roomId];
+    if (b) {
+      const [x, y, w, h, a = 0] = b.map(Number), W = c.width / 100, H = c.height / 100;
+      g.save(); g.translate((x + w / 2) * W, (y + h / 2) * H); g.rotate(a * Math.PI / 180);
+      g.lineWidth = Math.max(4, c.width / 300); g.strokeStyle = '#e00000'; g.fillStyle = 'rgba(224,0,0,.12)';
+      g.fillRect(-w * W / 2, -h * H / 2, w * W, h * H); g.strokeRect(-w * W / 2, -h * H / 2, w * W, h * H); g.restore();
+    }
+    return c.toDataURL('image/jpeg', 0.88);
+  } catch { return ''; }
+}
+
 function checklist(C, t, en) {
   return [
     { k: 'page', fill: 1 },
@@ -243,7 +359,12 @@ export async function build(C, t, { forLine = false, getPhoto = null } = {}) {
     for (const [i, o] of occ.entries()) { const u = await photoData(o.photo); if (u) x.ids.push({ url: u, label: `${en ? 'Occupant' : 'ผู้อาศัย'} ${i + 1}${o.name ? ' · ' + o.name : ''}`, code: o.faceCode || '' }); }
     x.codeLbl = en ? 'Face scanner access code: ' : 'รหัสเครื่องสแกนใบหน้า: ';
   }
-  const EN_LBL = { meterE: 'Electricity meter', meterW: 'Water meter', fridge: 'Refrigerator' };
+  if (C.kind === 'wh') {   // สัญญาเช่าคลัง: แนบแผนผังบริเวณ (เอกสารที่ 1) + รูปแนบอื่น ไม่มีบัตรผู้อาศัย/ใบตรวจสภาพห้อง
+    const wx = { ids: [], photos: [] }, plan = await planImage(C.room);
+    if (plan) wx.photos.push({ url: plan, label: `เอกสารที่ 1 · แผนผังบริเวณ (คลัง ${C.room} กรอบสีแดง)` });
+    for (const p of C.photos || []) { const u = await photoData(p.id); if (u) wx.photos.push({ url: u, label: p.label || '' }); }
+    return { blocks: contentWH(C, wx), en: false };
+  }  const EN_LBL = { meterE: 'Electricity meter', meterW: 'Water meter', fridge: 'Refrigerator' };
   for (const p of C.photos || []) { const u = await photoData(p.id); if (u) x.photos.push({ url: u, label: (en && EN_LBL[p.tag]) || p.label || '' }); }
   return { blocks: en ? contentEN(C, x) : contentTH(C, x), en };
 }
@@ -256,7 +377,10 @@ const CSS = `
 .ct-pg:last-child{break-after:auto;page-break-after:auto}
 .ct-pg *{box-sizing:border-box}
 .ct-pg.en{font-size:14.5px;line-height:1.6;text-align:justify}
-.ct-pg .wm{position:absolute;left:50%;top:52%;width:165mm;transform:translate(-50%,-50%);opacity:.13;pointer-events:none}
+.ct-pg .wm{position:absolute;left:50%;top:52%;width:165mm;transform:translate(-50%,-50%);opacity:.13;pointer-events:none}   /* ลายน้ำทุกหน้า ความโปร่งเท่าสัญญา MAP ต้นฉบับ */
+.ct-grid{border-collapse:collapse;margin:4px auto 8px;font-size:14.5px;line-height:1.5}
+.ct-grid th,.ct-grid td{border:1px solid #000;padding:1px 10px;text-align:center;font-weight:400}
+.ct-grid th{font-weight:700}
 .ct-pg>*{position:relative}
 .ct-hd{text-align:center;font-weight:700;font-size:16px;line-height:1.6;border-bottom:2.5px solid #1F4E79;padding-bottom:3px;margin:0 -2mm 14px}
 .ct-ft{position:absolute!important;left:18mm;right:18mm;bottom:9mm;border-top:2.5px solid #1F4E79}
@@ -328,11 +452,14 @@ function blockHtml(b, ctx) {
       return `<p class="${[b.in ? 'in' : '', b.ind ? 'ind' : '', b.sp ? 'sp' : '', b.center ? 'ctr' : '', j ? 'j' : ''].join(' ')}">${runsHtml(b.runs, j)}</p>`; }
     case 'rate': return `<div class="ct-rate"><span>${esc(b.a)}</span><span>${esc(b.b)}</span></div>`;
     case 'items': return `<table class="ct-items">${b.rows.map(([n, r, a]) => `<tr><td style="width:9mm">${n}</td><td>${runsHtml(r)}</td><td class="l">${esc(b.word)}</td><td class="a">${runHtml(a)}</td><td class="u">${esc(b.unit)}</td></tr>`).join('')}</table>`;
+    case 'grid': return `<div class="ctr" style="margin-top:4px"><b>${esc(b.title || '')}</b></div><table class="ct-grid"><tr>${b.head.map(h => `<th>${esc(h)}</th>`).join('')}</tr>${b.rows.map(r => `<tr>${r.map(v => `<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</table>`;
     case 'qr': return ctx.qr ? `<div class="ct-qr"><img src="${ctx.qr}" alt="QR"></div>` : '';
     case 'group': return `<div>${b.blocks.map(x => blockHtml(x, ctx)).join('')}</div>`;
     case 'sign': {
-      const one = (role, name, paren) => `<div class="ct-sg"><span>${esc(b.sg)}</span><span class="dl"></span><span>${esc(role)}</span><span></span><span class="sn">${paren ? `(${name ? `<span class="c-blue">${esc(name)}</span>` : `<span class="dots">${'.'.repeat(34)}</span>`})` : esc(name)}</span><span></span></div>`;
-      return `<div class="ct-sign">${one(b.roles[0], b.names[0], 1)}${one(b.roles[1], b.names[1], 0)}${one(b.roles[2], b.names[2], 1)}${one(b.roles[3], b.names[3], 1)}</div>`;
+      const PAREN = b.paren || [1, 0, 1, 1];   // ใส่วงเล็บชื่อผู้ลงนาม (สัญญาห้องพัก: ชื่อผู้ให้เช่าไม่มีวงเล็บ)
+      const one = i => { const name = b.names[i], sub = b.subs?.[i];
+        return `<div class="ct-sg"><span>${esc(b.sg)}</span><span class="dl"></span><span>${esc(b.roles[i])}</span><span></span><span class="sn">${PAREN[i] ? `(${name ? `<span class="c-blue">${esc(name)}</span>` : `<span class="dots">${'.'.repeat(34)}</span>`})` : esc(name)}</span><span></span>${sub ? `<span></span><span class="sn">${esc(sub)}</span><span></span>` : ''}</div>`; };
+      return `<div class="ct-sign">${[0, 1, 2, 3].map(one).join('')}</div>`;
     }
     case 'meters': return `<div class="ct-row2" style="padding:0 ${ctx.en ? 6 : 12}mm"><span>${runsHtml(b.l)}</span><span>${runsHtml(b.r)}</span></div>`;
     case 'remarks': return `<div class="ct-rmk"><span>${esc(b.label)}</span><i></i></div>` + '<div class="ct-rmk"><i></i></div>'.repeat(b.n - 1);
@@ -443,14 +570,18 @@ async function blockDocx(b, ctx) {
     case 'rate': return P(runX({ t: b.a }) + tab() + runX({ t: b.b }), { ind: 680, tabs: TABS([2400]) });
     case 'items': return b.rows.map(([n, r, a]) => P(runX({ t: n }) + tab() + flat(r).map(runX).join('') + tab() + runX({ t: b.word }) + tab() + runX(a) + tab() + runX({ t: b.unit }),
       { ind: 340, tabs: TABS([900], [6500], [8550, 'right'], [8750]) })).join('');
+    case 'grid': { const n = b.head.length, w = Math.floor((n > 2 ? 7600 : 6000) / n), ws = Array(n).fill(w), cell = (v, bold) => cellX(w, P(runX({ t: String(v), b: bold ? 1 : 0, sz: 28 }), { jc: 'center' }), { border: 1, vAlign: 'center' });
+      return P(runX({ t: b.title || '', b: 1 }), { jc: 'center', before: 120 }) + `<w:tbl><w:tblPr><w:tblW w:w="${w * n}" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid>${ws.map(x => `<w:gridCol w:w="${x}"/>`).join('')}</w:tblGrid><w:tr>${b.head.map(h => cell(h, 1)).join('')}</w:tr>${b.rows.map(r => `<w:tr>${r.map(v => cell(v)).join('')}</w:tr>`).join('')}</w:tbl>` + P(''); }
     case 'qr': return ctx.qr ? P(ctx.wr.drawing(ctx.wr.addImage(ctx.qr), ...fit(ctx.qrSize, 120, 46)), { jc: 'center', before: 120, after: 120 }) : '';
     case 'group': return (await Promise.all(b.blocks.map(x => blockDocx(x, ctx)))).join('');
     case 'sign': {
       const half = Math.floor(W / 2), roleW = en ? 1300 : 1050;
-      const one = (role, name, paren) => P(runX({ t: b.sg + ' ' }) + tab() + runX({ t: ' ' + role }), { tabs: TABS([half - roleW - 300, 'left', 'dot']), before: 480 }) +
-        P(paren ? (name ? runX({ t: '(' }) + runX({ t: name, c: 'blue' }) + runX({ t: ')' }) : runX({ t: '(' + '.'.repeat(34) + ')', dots: 1 })) : runX({ t: name }), { jc: 'center', ind: 0, after: 360 });
-      return tableX([half, W - half], [cellX(half, one(b.roles[0], b.names[0], 1)) + cellX(W - half, one(b.roles[1], b.names[1], 0)),
-        cellX(half, one(b.roles[2], b.names[2], 1)) + cellX(W - half, one(b.roles[3], b.names[3], 1))]);
+      const PAREN = b.paren || [1, 0, 1, 1];
+      const one = i => { const role = b.roles[i], name = b.names[i], paren = PAREN[i], sub = b.subs?.[i];
+        return P(runX({ t: b.sg + ' ' }) + tab() + runX({ t: ' ' + role }), { tabs: TABS([half - roleW - 300, 'left', 'dot']), before: 480 }) +
+          P(paren ? (name ? runX({ t: '(' }) + runX({ t: name, c: 'blue' }) + runX({ t: ')' }) : runX({ t: '(' + '.'.repeat(34) + ')', dots: 1 })) : runX({ t: name }), { jc: 'center', ind: 0, after: sub ? 0 : 360 }) +
+          (sub ? P(runX({ t: sub }), { jc: 'center', after: 360 }) : ''); };
+      return tableX([half, W - half], [cellX(half, one(0)) + cellX(W - half, one(1)), cellX(half, one(2)) + cellX(W - half, one(3))]);
     }
     case 'meters': return P(flat(b.l).map(runX).join('') + tab() + flat(b.r).map(runX).join(''), { ind: 680, tabs: TABS([TW - 680, 'right']), before: 240, after: 240 });
     case 'remarks': return P(runX({ t: b.label + ' ' }) + tab(), { tabs: TABS([TW, 'right', 'dot']) }) + Array(b.n - 1).fill(P(tab(), { tabs: TABS([TW, 'right', 'dot']) })).join('');
