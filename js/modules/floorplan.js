@@ -1,0 +1,215 @@
+// ผังหน่วยเช่า (คลัง / โกดัง / คูหา) — ผังปรับได้: รูปแบบแปลนเป็นพื้นหลัง + กรอบหน่วยเช่าวางทับ (ดู core/layout.js)
+// ผู้ดูแลระบบกด "ปรับผัง" เพื่ออัปโหลดแบบแปลน (รูป/PDF) แล้วลากวาง หรือให้ Claude Desktop สร้างไฟล์ app/layout/layout.json
+import * as db from '../core/db.js';
+import * as M from '../core/model.js';
+import * as auth from '../core/auth.js';
+import * as L from '../core/layout.js';
+import * as acc from '../core/access.js';
+import { UNIT, FLOOR, feature } from '../core/config.js';
+import { esc, fmt0, thDate, periodLabel, toast, confirmBox } from '../core/ui.js';
+import { openTenantForm, moveOut, photoThumb, openTenantHistory, cancelMoveOut, printRefund, compress, fileToDataUrl } from './tenants.js';
+import { openPayment, openPaymentDetail, hasSlipIssue } from './billing.js';
+import { occ } from '../core/idcard.js';
+
+let floor = null, sel = null;
+let draft = null;   // สำเนาผังที่กำลังแก้ในโหมด "ปรับผัง" (null = โหมดใช้งานปกติ)
+
+// ⚠️ ยังไม่มีรูปบัตร / ข้อมูลไม่ครบ (ชี้เมาส์เพื่อดูว่าขาดอะไร)
+const warn = t => { const m = M.missingText(t); return m ? `<span class="warn-ic" title="${esc(m)}">⚠️</span>` : ''; };
+
+function cell(r) {
+  if (!r) return '<div></div>';
+  const st = M.roomState(r), t = M.tenantOf(r.id), sl = M.slotsOf(r.id);
+  const car = sl.some(s => s.zone === 'CAR'), moto = sl.filter(s => s.zone !== 'CAR').length;
+  return `<div class="room ${M.ROOM_TXT[st][2]} ${sel === r.id ? 'sel' : ''}" data-room="${r.id}" title="${M.ROOM_TXT[st][0]}">
+    <div><div class="no">${r.id}</div><div class="nm">${esc(t?.name || r.label || '— ว่าง —')}</div></div>
+    <div class="ic">${r.type === 'พัดลม' ? '<span title="คลังพัดลม">🌀<small>พัดลม</small></span>' : ''}${feature('fridge') && t?.fridge ? '<span title="เช่าตู้เย็น">🧊</span>' : ''}${moto ? `<span title="ที่จอดมอไซค์">🏍️${moto > 1 ? `<small>×${moto}</small>` : ''}</span>` : ''}${car ? '<span title="ที่จอดรถยนต์">🚗</span>' : ''}${warn(t)}</div></div>`;
+}
+
+function detail(id) {
+  if (!id) return `<div class="empty">👆 คลิก${UNIT}เพื่อดูรายละเอียด<br>ผู้เช่า · ค่าเช่า · ตู้เย็น · ที่จอดรถ · บิล</div>`;
+  const r = db.get('rooms', id), t = M.tenantOf(id), st = M.roomState(r), sl = M.slotsOf(id);
+  const last = db.all('bills').filter(b => b.room === id).sort((a, b) => b.period.localeCompare(a.period))[0];
+  const link = M.lineLinkOf(id);
+  return `<div style="display:flex;justify-content:space-between;align-items:start;gap:8px"><div><h3>${UNIT} ${id}</h3><div class="note">${esc(r.label || r.type)}${r.floor ? ' · ' + FLOOR + ' ' + r.floor : ''}</div></div>
+    <span class="pill ${M.ROOM_TXT[st][1]}">${M.ROOM_TXT[st][0]}</span></div>
+  ${M.missingText(t) ? `<div class="missing-box">⚠️ <b>${esc(M.missingText(t))}</b> <a href="#" data-a="fill">กรอกเพิ่ม →</a></div>` : ''}
+  <dl>
+    <dt>ผู้เช่า</dt><dd>${esc(t?.name || '-')}</dd>
+    <dt>โทร</dt><dd>${t?.phone ? `<a href="tel:${esc(t.phone)}">${esc(t.phone)}</a>` : '-'}</dd>
+    ${t?.occupants?.length ? `<dt>ผู้พักร่วม</dt><dd>${t.occupants.map(o => { o = occ(o); return `${esc(o.name || '-')}${o.idNo ? ` <span class="note">${esc(o.idNo)}</span>` : ''}${o.photo ? ' 📄' : ''}`; }).join('<br>')}</dd>` : ''}
+    <dt>เข้าพัก</dt><dd>${thDate(t?.since)}${t?.since ? ` <span class="note">(${M.stayText(t.since)})</span>` : ''}</dd>
+    ${t ? `<dt>วันเกิด</dt><dd>${t.birthDate ? thDate(t.birthDate) + (+t.birthDate.slice(5, 7) === new Date().getMonth() + 1 ? ' 🎂' : '') : '<span class="pill warn">ยังไม่ระบุ</span>'}</dd>` : ''}
+    <dt>ค่าเช่า</dt><dd>฿${fmt0(t?.rent ?? r.rent)}</dd>
+    <dt>น้ำ / ไฟ</dt><dd>฿${M.roomRates(r, t).water} / ฿${M.roomRates(r, t).elec} ต่อหน่วย${t && (t.wRate != null || t.eRate != null) ? ' <span class="note">(ตามสัญญา)</span>' : ''}</dd>
+    ${t ? `<dt>เงินประกัน</dt><dd>฿${fmt0(t.deposit)}${M.depositUsed(t) ? ` <span class="note">(หักชำระบิลแล้ว ฿${fmt0(M.depositUsed(t))} · คงเหลือ ฿${fmt0(M.depositLeft(t))})</span>` : ''}${t.rentAdvance ? ` · ล่วงหน้า ฿${fmt0(t.rentAdvance)}` : ''}</dd>` : ''}
+    ${t?.note ? `<dt>หมายเหตุ</dt><dd class="note">${esc(t.note)}</dd>` : ''}
+    ${feature('fridge') ? `<dt>ตู้เย็น</dt><dd>${t?.fridge ? `🧊 เช่า ฿${fmt0(t.fridge)}/เดือน` : 'ไม่ได้เช่า'}</dd>` : ''}
+    <dt>ค่าที่จอด</dt><dd>${t?.parkingFee ? `฿${fmt0(t.parkingFee)}/เดือน` : '-'}</dd>
+    <dt>ที่จอดรถ</dt><dd><div class="chips">${sl.length ? sl.map(s => `<button class="chip" data-slot="${s.id}">${s.zone === 'CAR' ? '🚗' : '🏍️'} ${s.id}${s.plate ? ' · ' + esc(s.plate) : ''}</button>`).join('') : '-'}</div></dd>
+    <dt>บิลล่าสุด</dt><dd>${last ? `${periodLabel(last.period, true)} · ฿${fmt0(M.calcBill(last).total)} ${M.billState(last) === 'internal' ? `<span class="pill idle">ส่วนกลาง</span>`
+      : `<button class="pill ${M.BILL_TXT[M.billState(last)][1]} pay-btn" data-a="lastbill" title="${['paid', 'partial'].includes(M.billState(last)) ? 'ดูรายละเอียดการโอน / แก้ไข' : 'รับชำระเงิน'}">${M.BILL_TXT[M.billState(last)][0]} ${hasSlipIssue(last) ? '⚠️ ตรวจสลิป' : ['paid', 'partial'].includes(M.billState(last)) ? '🔍' : '💰'}</button>`}` : '-'}</dd>
+    <dt>LINE</dt><dd>${link ? `✅ ${esc(link.displayName || M.lineName(id))}` : `<span class="note">ยังไม่ผูก (${esc(M.lineName(id))})</span>`}</dd>
+    ${t ? `<dt>บัตร ปชช.</dt><dd id="idthumb">${t.idPhoto ? 'กำลังโหลด…' : '<span class="pill bad">ยังไม่แนบ</span>'}</dd>` : ''}
+  </dl>
+  ${M.stays(id).length ? `<details open><summary><b>ประวัติการเช่าคลังนี้</b> <span class="note">${M.stays(id).length} ราย · กดชื่อเพื่อดูรายละเอียด/บิล</span></summary>
+    <div class="scroll" style="max-height:220px;margin-top:6px"><table class="tbl">${M.stays(id).map(p =>
+    `<tr class="click" data-past="${p.id}"><td style="white-space:normal">${esc(p.name)}${p.active ? ' <span class="pill ok">ปัจจุบัน</span>' : ''}</td>
+      <td class="note" style="white-space:normal">${thDate(p.since)} – ${p.active ? 'ปัจจุบัน' : thDate(p.moveOut)}<br>${M.stayText(p.since, p.active ? null : p.moveOut)}</td></tr>`).join('')}</table></div></details>` : ''}
+  <div class="acts">${t ? `<button class="btn pri" data-a="bill">บิลของคลังนี้</button><button class="btn" data-a="edit">แก้ไขผู้เช่า</button><button class="btn" data-a="contract">📝 สัญญาเช่า</button><button class="btn" data-a="out">ย้ายออก</button>`
+    : `<button class="btn pri" data-a="in">+ ผู้เช่าเข้าใหม่</button>${r.kind !== 'room' ? '<button class="btn" data-a="bill">บิล/มิเตอร์</button>' : ''}${M.pastTenantsOf(id)[0] ? `<button class="btn" data-a="undo" title="ใช้เมื่อกดย้ายออกผิด">↩ ยกเลิกการย้ายออก (${esc(M.pastTenantsOf(id)[0].name)})</button>` : ''}${M.pastTenantsOf(id)[0]?.moveOutDoc ? '<button class="btn" data-a="refund">🖨️ เอกสารคืนเงิน</button>' : ''}`}</div>`;
+}
+
+// ---------- ผัง ----------
+const pos = b => `left:${b[0]}%;top:${b[1]}%;width:${b[2]}%;height:${b[3]}%`;
+const floorsCfg = () => draft || L.get().floors || {};
+const floorCfg = f => floorsCfg()[String(f)] || null;
+const floorName = f => floorCfg(f)?.name || `${FLOOR} ${f}`;
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+const snap = v => Math.round(v * 2) / 2;
+function draftFloor() {
+  const k = String(floor);
+  if (!draft[k]) draft[k] = { name: '', image: '', ratio: 1.6, boxes: {}, notes: [] };
+  draft[k].boxes = draft[k].boxes || {}; draft[k].notes = draft[k].notes || [];
+  return draft[k];
+}
+
+function planHtml(all) {
+  const cfg = floorCfg(floor) || {}, list = all.filter(r => r.floor === floor);
+  const boxes = cfg.boxes || {}, placed = list.filter(r => boxes[r.id]), rest = list.filter(r => !boxes[r.id]);
+  const hasCanvas = !!(draft || placed.length || cfg.image || cfg.notes?.length);
+  const handle = draft ? '<i class="fp-h"></i>' : '';
+  const canvas = hasCanvas ? `<div class="fp ${draft ? 'edit' : ''} ${cfg.image ? 'has-img' : ''}" id="fp" style="aspect-ratio:${cfg.ratio || 1.6}">
+      <img class="fp-bg" id="fp-bg" alt="" hidden>
+      ${(cfg.notes || []).map((n, i) => `<div class="fp-note" data-note="${i}" style="${pos(n.box)}">${esc(n.text)}${handle}</div>`).join('')}
+      ${placed.map(r => cell(r).replace('<div class="room ', `<div style="${pos(boxes[r.id])}" class="room fp-room `).replace(/<\/div>\s*$/, handle + '</div>')).join('')}
+    </div>` : '';
+  const tray = rest.length ? `${hasCanvas ? `<p class="note" style="margin:12px 0 0">${draft ? `ยังไม่ได้วางบนผัง — กดที่${UNIT}เพื่อวางลงผัง` : `${UNIT}ที่ยังไม่ได้วางบนผัง`}</p>` : ''}<div class="ground">${rest.map(cell).join('')}</div>` : '';
+  return `<div>${canvas}${tray}${!hasCanvas && !rest.length ? `<div class="card empty">${FLOOR}นี้ยังไม่มี${UNIT} — เพิ่มได้ที่ ตั้งค่า → จัดการ${UNIT}</div>` : ''}</div>`;
+}
+
+const toolsHtml = () => `<div class="card fp-tools"><b>✏️ ปรับผัง — ${esc(floorName(floor))}</b>
+  <div class="toolbar" style="margin-top:10px">
+    <label class="btn">🖼️ อัปโหลดแบบแปลน (รูป / PDF)<input type="file" id="fp-file" accept="image/*,application/pdf" hidden></label>
+    <button class="btn" id="fp-auto">▦ วางทุก${UNIT}อัตโนมัติ</button>
+    <button class="btn" id="fp-note">＋ ป้ายข้อความ</button>
+    <button class="btn" id="fp-name">ตั้งชื่อ${FLOOR}</button>
+    <button class="btn" id="fp-noimg">ลบรูปพื้นหลัง</button>
+    <button class="btn" id="fp-exp">⬇️ ส่งออกไฟล์ผัง</button>
+    <label class="btn">⬆️ นำเข้าไฟล์ผัง<input type="file" id="fp-imp" accept=".json,application/json" hidden></label>
+    <span style="flex:1"></span>
+    <button class="btn" id="fp-cancel">ยกเลิก</button><button class="btn pri" id="fp-save">💾 บันทึกผัง</button>
+  </div>
+  <p class="note" style="margin-bottom:0">ลากกรอบเพื่อย้าย · ลากมุมขวาล่างเพื่อย่อ/ขยาย · ดับเบิลคลิกกรอบเพื่อเอาออกจากผัง (ข้อมูล${UNIT}ไม่ถูกลบ) · ดับเบิลคลิกป้ายข้อความเพื่อแก้/ลบ<br>
+  ต้องการให้ Claude ช่วยวาดจากแบบแปลน: วางไฟล์แบบแปลนในโฟลเดอร์ <code>layout-input</code> แล้วเปิดโฟลเดอร์โครงการด้วย Claude Desktop (ดูไฟล์ CLAUDE.md)</p></div>`;
+
+function bindEdit(el, re) {
+  const cfg = draftFloor(), fp = el.querySelector('#fp');
+  // กดหน่วยเช่าที่ยังไม่ได้วาง → วางกลางผัง
+  el.querySelectorAll('.ground [data-room]').forEach(b => b.onclick = () => { cfg.boxes[b.dataset.room] = [40, 40, 18, 18]; re(); });
+  fp?.querySelectorAll('.fp-room,.fp-note').forEach(node => {
+    const isNote = node.dataset.note != null;
+    const b = isNote ? cfg.notes[+node.dataset.note].box : cfg.boxes[node.dataset.room];
+    node.onclick = e => e.stopPropagation();
+    node.onpointerdown = e => {
+      e.preventDefault(); node.setPointerCapture(e.pointerId);
+      const R = fp.getBoundingClientRect(), resize = e.target.classList.contains('fp-h'), s = [...b], x0 = e.clientX, y0 = e.clientY;
+      node.onpointermove = ev => {
+        const dx = (ev.clientX - x0) / R.width * 100, dy = (ev.clientY - y0) / R.height * 100;
+        if (resize) { b[2] = snap(clamp(s[2] + dx, 2, 100 - s[0])); b[3] = snap(clamp(s[3] + dy, 2, 100 - s[1])); }
+        else { b[0] = snap(clamp(s[0] + dx, 0, 100 - s[2])); b[1] = snap(clamp(s[1] + dy, 0, 100 - s[3])); }
+        node.style.cssText = pos(b);
+      };
+      node.onpointerup = node.onpointercancel = () => { node.onpointermove = null; };
+    };
+    node.ondblclick = () => {
+      if (isNote) {
+        const i = +node.dataset.note, t = prompt('ข้อความบนป้าย (ลบข้อความทั้งหมดเพื่อลบป้าย)', cfg.notes[i].text);
+        if (t === null) return;
+        if (t.trim()) cfg.notes[i].text = t.trim(); else cfg.notes.splice(i, 1);
+      } else delete cfg.boxes[node.dataset.room];
+      re();
+    };
+  });
+
+  const $e = s => el.querySelector(s);
+  $e('#fp-file').onchange = async e => {
+    const f = e.target.files[0]; if (!f) return;
+    try {
+      toast('กำลังเตรียมรูปแบบแปลน…');
+      const isPdf = f.type === 'application/pdf' || /\.pdf$/i.test(f.name);
+      const dataUrl = isPdf ? await L.pdfToImage(f) : await compress(await fileToDataUrl(f), 1800);
+      const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = dataUrl; });
+      cfg.image = await L.storeImage(floor, dataUrl); cfg.ratio = Math.round(img.width / img.height * 1000) / 1000;
+      toast(isPdf ? 'ใช้หน้าแรกของ PDF เป็นพื้นหลังแล้ว' : 'ใส่รูปแบบแปลนแล้ว'); re();
+    } catch (x) { toast('อ่านไฟล์ไม่ได้: ' + (x.message || x)); }
+  };
+  $e('#fp-auto').onclick = async () => {
+    const ids = M.rooms().filter(r => r.floor === floor).map(r => r.id);
+    if (Object.keys(cfg.boxes).length && !await confirmBox(`จัดเรียงทุก${UNIT}ของ${floorName(floor)}ใหม่เป็นตาราง? (ตำแหน่งที่วางไว้จะถูกแทนที่)`, 'จัดเรียงใหม่')) return;
+    cfg.boxes = L.autoBoxes(ids, cfg.ratio || 1.6); re();
+  };
+  $e('#fp-note').onclick = () => { const t = prompt('ข้อความบนป้าย เช่น ทางเข้า / ลานจอด / สำนักงาน'); if (t?.trim()) { cfg.notes.push({ text: t.trim(), box: [42, 44, 16, 8] }); re(); } };
+  $e('#fp-name').onclick = () => { const t = prompt(`ชื่อที่แสดงบนแท็บ (เว้นว่าง = "${FLOOR} ${floor}")`, cfg.name || ''); if (t !== null) { cfg.name = t.trim(); re(); } };
+  $e('#fp-noimg').onclick = () => { cfg.image = ''; re(); };
+  $e('#fp-exp').onclick = () => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify({ format: 'rea-pms-layout', updatedAt: new Date().toISOString(), floors: draft }, null, 2)], { type: 'application/json' }));
+    a.download = 'layout.json'; a.click();
+  };
+  $e('#fp-imp').onchange = async e => {
+    const f = e.target.files[0]; if (!f) return;
+    try {
+      const j = JSON.parse(await f.text()), fl = L.normalize(j);
+      if (!Object.keys(fl).length) throw new Error('ไม่พบข้อมูลผังในไฟล์');
+      draft = fl; toast('นำเข้าไฟล์ผังแล้ว — ตรวจดูแล้วกด "บันทึกผัง"'); re();
+    } catch (x) { toast('ไฟล์ผังไม่ถูกต้อง: ' + x.message); }
+  };
+  $e('#fp-cancel').onclick = () => { draft = null; re(); };
+  $e('#fp-save').onclick = async () => { await L.save(draft); draft = null; toast('บันทึกผังแล้ว'); re(); };
+}
+
+export default {
+  id: 'floorplan', title: 'ผัง' + UNIT, icon: '🏢',
+  render(el, nav, arg) {
+    const all = M.rooms();
+    if (arg?.room) { sel = arg.room; floor = db.get('rooms', arg.room)?.floor || floor; arg.room = null; }
+    const floors = [...new Set([...all.map(r => r.floor), ...Object.keys(floorsCfg()).map(Number)])].filter(f => f >= 1 && (!acc.current().floors.length || acc.current().floors.includes(f))).sort((a, b) => a - b);   // ผู้ใช้ที่จำกัดชั้น/โซน เห็นเฉพาะแท็บของตัวเอง
+    if (!floors.includes(floor)) floor = floors[0] ?? 1;
+    const re = () => this.render(el, nav);
+    const canEdit = auth.can('rooms.manage');
+    const icons = [feature('fridge') && '🧊 ตู้เย็น', feature('parking') && '🏍️ มอไซค์ · 🚗 รถยนต์', '⚠️ ข้อมูลผู้เช่าไม่ครบ'].filter(Boolean).join(' · ');
+
+    el.innerHTML = `
+    <div class="top"><h2>ผัง${UNIT}</h2>
+      <div class="seg">${floors.map(f => `<button data-f="${f}" class="${f === floor ? 'on' : ''}">${esc(floorName(f))}</button>`).join('')}</div>
+      ${canEdit && !draft ? '<button class="btn" id="fp-edit">✏️ ปรับผัง</button>' : ''}</div>
+    ${draft ? toolsHtml() : `<div class="legend"><span><i style="background:var(--ok-soft);border:1px solid var(--ok)"></i>ไม่มีค้าง</span><span><i style="background:var(--warn-soft);border:1px solid var(--warn)"></i>รอชำระ</span><span><i style="background:var(--bad-soft);border:1px solid var(--bad)"></i>ค้างชำระ</span><span><i style="background:var(--idle-soft);border:1px solid var(--idle)"></i>ว่าง / ส่วนกลาง</span><span>${icons}</span></div>`}
+    <div class="${draft ? '' : 'layout'}">${planHtml(all)}${draft ? '' : `<div class="card detail">${detail(sel)}</div>`}</div>`;
+
+    const cfg = floorCfg(floor);
+    if (cfg?.image) L.imageSrc(cfg.image).then(src => { const i = el.querySelector('#fp-bg'); if (i && src) { i.src = src; i.hidden = false; } });
+    el.querySelectorAll('[data-f]').forEach(b => b.onclick = () => { floor = +b.dataset.f; sel = null; re(); });
+    el.querySelector('#fp-edit')?.addEventListener('click', () => { draft = JSON.parse(JSON.stringify(L.get().floors || {})); sel = null; re(); });
+    if (draft) return bindEdit(el, re);
+
+    el.querySelectorAll('[data-room]').forEach(b => b.onclick = () => { sel = b.dataset.room; re(); });
+    el.querySelectorAll('[data-slot]').forEach(b => b.onclick = () => nav.go('parking', { highlight: [b.dataset.slot] }));
+    const t = sel && M.tenantOf(sel);
+    if (t?.idPhoto) photoThumb(t.idPhoto).then(h => { const d = el.querySelector('#idthumb'); if (d) d.innerHTML = h; });
+    const act = a => el.querySelector(`[data-a="${a}"]`);
+    act('bill')?.addEventListener('click', () => nav.go('billing', { room: sel }));
+    act('edit')?.addEventListener('click', () => openTenantForm(t, re));
+    act('fill')?.addEventListener('click', e => { e.preventDefault(); openTenantForm(t, re); });
+    act('in')?.addEventListener('click', () => import('./contract.js').then(m => m.openContract({ room: sel }, re)));
+    act('out')?.addEventListener('click', () => moveOut(t, re));
+    act('contract')?.addEventListener('click', () => import('./contract.js').then(m => m.openContract(t, re)));
+    act('lastbill')?.addEventListener('click', () => {
+      const lb = db.all('bills').filter(b => b.room === sel).sort((a, b) => b.period.localeCompare(a.period))[0];
+      ['paid', 'partial'].includes(M.billState(lb)) ? openPaymentDetail(lb, re) : openPayment(lb, re);
+    });
+    act('undo')?.addEventListener('click', () => cancelMoveOut(M.pastTenantsOf(sel)[0], re));
+    act('refund')?.addEventListener('click', () => printRefund(M.pastTenantsOf(sel)[0]));
+    el.querySelectorAll('[data-past]').forEach(tr => tr.onclick = () => openTenantHistory(db.get('tenants', tr.dataset.past), re));
+  },
+};
