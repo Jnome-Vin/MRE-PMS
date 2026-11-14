@@ -8,8 +8,34 @@ import * as K from '../core/contract.js';
 import { compress, fileToDataUrl } from './tenants.js';
 import { editImage, dropZone } from '../core/imgedit.js';
 import { readMeter, canUseClaude } from '../core/meter.js';
+import { pdfPages } from '../core/layout.js';
+import { isServerMode } from '../core/config.js';
+import * as api from '../core/api.js';
+
+// เอกสารผู้เช่าคลัง: นิติบุคคล = หนังสือรับรองบริษัท (ไม่เกิน 6 เดือน) + บัตรกรรมการ · ลงนามโดยผู้รับมอบอำนาจ = หนังสือมอบอำนาจ + บัตรผู้รับมอบอำนาจ
+export const WH_DOCS = [
+  ['cert', 'หนังสือรับรองบริษัท (ออกไม่เกิน 6 เดือน)', C => C.tenantType !== 'person'],
+  ['dirId', 'สำเนาบัตรประชาชนกรรมการผู้มีอำนาจลงนาม', C => C.tenantType !== 'person'],
+  ['poa', 'หนังสือมอบอำนาจ', C => !!C.proxy],
+  ['proxyId', 'สำเนาบัตรประชาชนผู้รับมอบอำนาจ', C => !!C.proxy],
+];
+// หนังสือรับรองออกเกิน 6 เดือนก่อนวันทำสัญญา?
+export const certTooOld = C => { if (!C.certDate) return false; const d = new Date(C.date || Date.now()); d.setMonth(d.getMonth() - 6); return new Date(C.certDate) < d; };
 
 const CSS = `
+.wh-sw{display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:#fafcfe;cursor:pointer;margin-bottom:8px}
+.wh-sw input{display:none}.wh-sw i{flex:none;width:42px;height:24px;border-radius:999px;background:#cbd5e1;position:relative;transition:.15s}
+.wh-sw i::after{content:'';position:absolute;left:3px;top:3px;width:18px;height:18px;border-radius:50%;background:#fff;transition:.15s}
+.wh-sw input:checked+i{background:#16a34a}.wh-sw input:checked+i::after{left:21px}
+.wh-back{border:1px solid #fdba74;background:#fff7ed;border-radius:10px;padding:8px 10px;margin-bottom:8px}
+.wh-h{margin:6px 0 2px;font-size:14px}.wh-cnt{display:flex;align-items:center;gap:10px;margin-bottom:4px}.wh-cnt b{min-width:20px;text-align:center}
+.wh-m{display:grid;grid-template-columns:1.1fr 1fr;gap:6px}
+#c-ebox.off{opacity:.5}#c-ebox.off input,#c-ebox.off button{pointer-events:none;background:#eef1f4}
+.wh-docs{display:grid;gap:8px;margin-top:8px}.wh-doc{border:1px dashed var(--line);border-radius:10px;padding:8px 10px}
+.wh-doc.miss{border-color:#f59e0b;background:#fffbeb}.wh-doc .hd{display:flex;justify-content:space-between;align-items:center;gap:8px;font-size:13px}
+.wh-doc .th{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}.wh-doc .th span{position:relative}
+.wh-doc .th img{width:64px;height:84px;object-fit:cover;border:1px solid var(--line);border-radius:4px;cursor:zoom-in;background:#fff}
+.wh-doc .th button{position:absolute;top:-6px;right:-6px;width:20px;height:20px;border-radius:50%;border:0;background:#dc2626;color:#fff;font-size:12px;line-height:20px;padding:0;cursor:pointer}
 .ctm{display:grid;grid-template-columns:minmax(360px,440px) 1fr;gap:14px;align-items:start}
 .ctm .frm{max-height:72vh;overflow:auto;padding-right:4px}
 .ctm .sec{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:12px}
@@ -433,7 +459,11 @@ async function openContractWH(tIn = {}, done) {
           ${f('phone', 'เบอร์โทร')}
           ${f('tenantAddress', '<span id="c-addrl">ที่ตั้งสำนักงานใหญ่</span>', 'f-blue', '', true)}
           <div class="full co-only">${f('tenantSigner', 'กรรมการผู้มีอำนาจลงนาม (ฝ่ายผู้เช่า)').slice(5, -6)}</div>
-        </div></div>
+          <div class="full"><label class="wh-sw"><input type="checkbox" id="c-proxy" ${C.proxy ? 'checked' : ''}><i></i><span><b>ลงนามโดยผู้รับมอบอำนาจ</b><br><span class="note">ต้องแนบหนังสือมอบอำนาจ + สำเนาบัตรผู้รับมอบอำนาจ</span></span></label></div>
+          <div class="full px-only">${f('proxyName', 'ชื่อผู้รับมอบอำนาจ (ลงนามแทนผู้เช่า)').slice(5, -6)}</div>
+          <div class="full co-only"><label class="l">วันที่ออกหนังสือรับรองบริษัท</label><input class="f-blue" type="date" data-k="certDate" value="${esc(C.certDate || '')}"><div class="auto" id="c-certw"></div></div>
+        </div>
+        <div id="c-docs" class="wh-docs"></div></div>
       <div class="sec"><h4>📄 2. รายละเอียดสัญญา</h4>
         <div class="g2">
           ${f('contractNo', 'เลขที่สัญญา', 'f-blue', 'placeholder="เช่น RAD-MRE69-07"')}${f('date', 'วันที่ทำสัญญา', 'f-blue', 'type="date"')}
@@ -446,13 +476,23 @@ async function openContractWH(tIn = {}, done) {
           ${f('deposit', 'เงินประกันความเสียหาย (บาท)', 'f-blue', num)}${f('clean', 'เงินประกันการทำความสะอาด (บาท)', 'f-blue', num)}
           <div class="full"><label class="l">รวมเงินประกัน (ข้อ 3)</label><input class="f-red" id="c-total" disabled></div>
         </div></div>
-      <div class="sec"><h4>💧⚡ 3. ค่าน้ำ ค่าไฟ (ข้อ 8)</h4>
+      <div class="sec"><h4>💧⚡ 3. ค่าน้ำ ค่าไฟ และมิเตอร์ (ข้อ 8)</h4>
+        <label class="wh-sw"><input type="checkbox" id="c-self" ${C.selfElec ? 'checked' : ''}><i></i><span><b>ผู้เช่าขอไฟฟ้าจากการไฟฟ้าเอง</b><br><span class="note">ไม่คิดค่าไฟในบิล · ไม่มีช่องจดมิเตอร์ไฟ · ข้อ 8.2 เปลี่ยนเป็นเงื่อนไขโอนมิเตอร์คืนก่อนรับเงินประกัน</span></span></label>
+        <div id="c-back" class="wh-back" hidden><b>🔁 รับโอนมิเตอร์ไฟฟ้าคืน</b> <span class="note">— ปิดสวิตช์ในสัญญาที่ผู้เช่าเคยขอไฟฟ้าเอง ต้องกรอกวันที่และเลขมิเตอร์ ณ วันรับโอน · บิลถัดไปคิดค่าไฟจากเลขนี้</span>
+          <div class="g2"><div><label class="l">วันที่รับโอน *</label><input class="f-orange" type="date" id="c-backdate" value="${esc(C.elecBack?.date || '')}"></div><div id="c-backrd"></div></div></div>
         <div class="g2">
-          ${f('wRate', 'ค่าน้ำ บาท/หน่วย', 'f-blue', num)}${f('wMinUnits', 'ค่าน้ำขั้นต่ำ: 0 ถึง (หน่วย)', 'f-blue', 'inputmode="numeric"')}
-          ${f('wMinAmount', 'ค่าน้ำเหมาจ่ายขั้นต่ำ (บาท)', 'f-blue', num)}${f('eRate', 'ค่าไฟ บาท/หน่วย (ตั้งแต่ 21 หน่วย)', 'f-blue', num)}
-          <div class="full">${f('eTable', 'ตารางค่าไฟ 0–20 หน่วย (บาท 21 ค่า คั่นด้วย ,)', 'f-blue').slice(5, -6)}<div class="auto" id="c-etab"></div></div>
-          ${f('meterE', 'มิเตอร์ไฟเริ่มต้น', 'f-orange', 'inputmode="numeric"')}${f('meterW', 'มิเตอร์น้ำเริ่มต้น', 'f-lblue', 'inputmode="numeric"')}
-        </div></div>
+          <div><h5 class="wh-h">💧 น้ำประปา</h5>
+            <label class="l">จำนวนมิเตอร์น้ำ (มาตร)</label><div class="wh-cnt"><button type="button" class="btn sm" data-cnt="w:-1">−</button><b id="c-nW">1</b><button type="button" class="btn sm" data-cnt="w:1">+</button></div>
+            <div id="c-mw"></div>
+            ${f('wRate', 'ค่าน้ำ บาท/หน่วย (เกินขั้นต่ำ)', 'f-blue', num)}${f('wMinUnits', 'ค่าน้ำขั้นต่ำ: 0 ถึง (หน่วย)', 'f-blue', 'inputmode="numeric"')}
+            ${f('wMinAmount', 'ค่าน้ำเหมาจ่ายขั้นต่ำ (บาท)', 'f-blue', num)}</div>
+          <div id="c-ebox"><h5 class="wh-h">⚡ ไฟฟ้า</h5>
+            <label class="l">จำนวนมิเตอร์ไฟฟ้า (มาตร)</label><div class="wh-cnt"><button type="button" class="btn sm" data-cnt="e:-1">−</button><b id="c-nE">1</b><button type="button" class="btn sm" data-cnt="e:1">+</button></div>
+            <div id="c-me"></div>
+            ${f('eRate', 'ค่าไฟ บาท/หน่วย (ตั้งแต่ 21 หน่วย)', 'f-blue', num)}
+            ${f('eTable', 'ตารางค่าไฟ 0–20 หน่วย (บาท 21 ค่า คั่นด้วย ,)', 'f-blue').slice(0, -6)}<div class="auto" id="c-etab"></div></div></div>
+        </div>
+        <p class="note" style="margin:6px 0 0">มีหลายมิเตอร์: ตอนออกบิลรวมหน่วยทุกมิเตอร์ของชนิดเดียวกันก่อน แล้วคิดตามขั้นต่ำ/ตารางของสัญญานี้</p></div>
       <div class="sec"><h4>✍️ 4. ผู้ลงนาม</h4>
         <div class="g2">
           ${f('lessorSigner', 'กรรมการผู้มีอำนาจลงนาม (ฝ่ายผู้ให้เช่า)', 'f-blue', '', true)}
@@ -480,6 +520,8 @@ async function openContractWH(tIn = {}, done) {
     q('#c-taxl').textContent = co ? 'เลขประจำตัวผู้เสียภาษี' : 'เลขประจำตัวประชาชน';
     q('#c-addrl').textContent = co ? 'ที่ตั้งสำนักงานใหญ่' : 'ที่อยู่';
     box.querySelectorAll('.co-only').forEach(d => d.hidden = !co);
+    box.querySelectorAll('.px-only').forEach(d => d.hidden = !C.proxy);
+    const cw = q('#c-certw'); if (cw) { cw.textContent = !C.certDate ? 'ต้องออกไม่เกิน 6 เดือนก่อนวันทำสัญญา' : certTooOld(C) ? '⛔ หนังสือรับรองออกเกิน 6 เดือนแล้ว — ขอฉบับใหม่จากผู้เช่า' : '✅ ไม่เกิน 6 เดือน'; cw.style.color = certTooOld(C) ? '#dc2626' : ''; }
     const tot = K.total(C); q('#c-total').value = `${tot.toLocaleString('en-US')} บาท (${bahtText(tot)})`;
     q('#c-words').textContent = Number(C.rent) ? bahtText(C.rent) : '';
     const n = String(C.eTable || '').split(/[,\s]+/).filter(Boolean).length;
@@ -487,31 +529,120 @@ async function openContractWH(tIn = {}, done) {
     preview();
   };
   let dirty = false;
+  // ---- มิเตอร์: จำนวน 1 = ช่องเลขเริ่มต้นช่องเดียว · มากกว่า 1 = ชื่อ + เลขเริ่มต้นทีละตัว ----
+  let wasSelf = !!(t.contract?.kind === 'wh' && t.contract.selfElec);   // สัญญาที่บันทึกไว้ ผู้เช่าขอไฟฟ้าเองอยู่
+  const meterRows = k => {
+    const n = K.meterCount(C, k), list = K.meterList(C, k), cls = k === 'w' ? 'f-lblue' : 'f-orange', w = k === 'w' ? 'น้ำ' : 'ไฟ';
+    q(k === 'w' ? '#c-nW' : '#c-nE').textContent = n;
+    q(k === 'w' ? '#c-mw' : '#c-me').innerHTML = n === 1
+      ? `<label class="l">มิเตอร์${w}เริ่มต้น</label><input class="${cls}" data-mt="${k}:0:start" value="${esc(list[0].start)}" inputmode="numeric" placeholder="เลขมิเตอร์ ณ วันทำสัญญา">`
+      : list.map((m, i) => `<div class="wh-m"><div><label class="l">ชื่อมิเตอร์ ${i + 1}</label><input class="${cls}" data-mt="${k}:${i}:name" value="${esc(m.name)}"></div>
+          <div><label class="l">เลขเริ่มต้น</label><input class="${cls}" data-mt="${k}:${i}:start" value="${esc(m.start)}" inputmode="numeric"></div></div>`).join('')
+        + '<div class="auto">ชื่อตั้งให้อัตโนมัติ พิมพ์ทับได้ เช่น "ไฟหน้าคลัง" หรือเลขมิเตอร์ของการไฟฟ้า</div>';
+  };
+  const setMt = (k, i, fld, v) => {
+    if (fld === 'start' && i === 0) { C[k === 'w' ? 'meterW' : 'meterE'] = v; return; }
+    const key = k + (fld === 'name' ? 'Names' : 'Starts'), arr = [...(C[key] || [])]; arr[i] = v; C[key] = arr;
+  };
+  const paintElec = () => {
+    q('#c-ebox').classList.toggle('off', !!C.selfElec);
+    const back = wasSelf && !C.selfElec; q('#c-back').hidden = !back;
+    if (back) {
+      if (!C.elecBack) C.elecBack = { date: new Date().toISOString().slice(0, 10), readings: [] };
+      q('#c-backdate').value = C.elecBack.date || '';
+      q('#c-backrd').innerHTML = K.meterList(C, 'e').map((m, i) => `<label class="l">เลขมิเตอร์ไฟ${K.meterCount(C, 'e') > 1 ? ` (${esc(m.name)})` : ''} ณ วันรับโอน *</label><input class="f-orange" data-bk="${i}" value="${esc(C.elecBack.readings?.[i] ?? '')}" inputmode="numeric">`).join('');
+    }
+  };
+  meterRows('w'); meterRows('e'); paintElec();
+  // ---- เอกสารผู้เช่า (รูป หรือ PDF แปลงเป็นรูปทีละหน้า) — เก็บจริงตอนกดบันทึก ----
+  C.docs = (C.docs || []).map(d => ({ ...d }));
+  const newDocs = {}, docCache = {};
+  const docSrc = async id => {
+    if (newDocs[id] || docCache[id]) return newDocs[id] || docCache[id];
+    let p = await db.getPhoto(id);
+    if (!p && isServerMode() && navigator.onLine) { try { const r = await api.call('getPhoto', { id }); p = { id, dataUrl: r.dataUrl, driveId: r.fileId, name: r.name }; await db.putPhoto(p); } catch {} }
+    return (docCache[id] = p?.dataUrl || '');
+  };
+  const drawDocs = () => {
+    const need = WH_DOCS.filter(([, , on]) => on(C));
+    q('#c-docs').innerHTML = need.length ? `<label class="l" style="margin:0">📎 เอกสารประกอบสัญญา</label>` + need.map(([tag, label]) => {
+      const list = C.docs.filter(d => d.tag === tag);
+      return `<div class="wh-doc ${list.length ? '' : 'miss'}"><div class="hd"><span>${list.length ? '✅' : '⚠️'} <b>${label}</b>${list.length ? ` <span class="note">${list.length} หน้า</span>` : ' <span class="note">ยังไม่แนบ</span>'}</span>
+        <label class="btn sm">📎 เลือกไฟล์ (รูป / PDF)<input type="file" accept="image/*,application/pdf" multiple hidden data-doc="${tag}"></label></div>
+        ${list.length ? `<div class="th">${list.map(d => `<span><img data-dimg="${d.id}" alt="${esc(label)}"><button type="button" data-drm="${d.id}" title="ลบหน้านี้">✕</button></span>`).join('')}</div>` : ''}</div>`;
+    }).join('') : '';
+    q('#c-docs').querySelectorAll('[data-dimg]').forEach(async img => { img.src = await docSrc(img.dataset.dimg); img.onclick = () => { const w = window.open(); if (w) w.document.write(`<img src="${img.src}" style="max-width:100%">`); }; });
+    q('#c-docs').querySelectorAll('[data-drm]').forEach(b => b.onclick = () => { C.docs = C.docs.filter(d => d.id !== b.dataset.drm); delete newDocs[b.dataset.drm]; dirty = true; drawDocs(); });
+    q('#c-docs').querySelectorAll('[data-doc]').forEach(inp => inp.onchange = async () => {
+      const tag = inp.dataset.doc, files = [...inp.files]; if (!files.length) return;
+      const lbl = inp.closest('label'); lbl.firstChild.textContent = 'กำลังอ่านไฟล์…';
+      try {
+        for (const file of files) {
+          let pages;
+          if (file.type === 'application/pdf' || /\.pdf$/i.test(file.name)) { const r = await pdfPages(file); pages = r.pages; if (r.total > r.pages.length) toast(`PDF มี ${r.total} หน้า เก็บไว้ ${r.pages.length} หน้าแรก`, 4000); }
+          else pages = [await compress(await fileToDataUrl(file))];
+          for (const url of pages) { const id = uid('doc-'); newDocs[id] = url; C.docs.push({ id, tag }); }
+        }
+        dirty = true;
+      } catch (e) { toast('อ่านไฟล์ไม่ได้: ' + e.message, 5000); }
+      drawDocs();
+    });
+  };
+  drawDocs();
+  q('#c-proxy').onchange = e => { C.proxy = e.target.checked; dirty = true; drawDocs(); calc(); };
+  box.querySelectorAll('[data-cnt]').forEach(b => b.onclick = () => {
+    const [k, d] = b.dataset.cnt.split(':'), key = k === 'w' ? 'nW' : 'nE';
+    C[key] = Math.min(6, Math.max(1, K.meterCount(C, k) + Number(d))); dirty = true; meterRows(k); if (k === 'e') paintElec(); calc();
+  });
+  q('#c-self').onchange = e => { C.selfElec = e.target.checked; if (C.selfElec) C.elecBack = null; dirty = true; paintElec(); calc(); };
   q('#cf').addEventListener('input', e => {
-    const k = e.target.dataset.k; if (!k) return;
+    const d = e.target.dataset;
+    if (d.mt) { const [k, i, fld] = d.mt.split(':'); setMt(k, +i, fld, e.target.value); dirty = true; calc(); return; }
+    if (d.bk != null || e.target.id === 'c-backdate') { C.elecBack = { date: q('#c-backdate').value, readings: [...box.querySelectorAll('[data-bk]')].map(x => x.value) }; dirty = true; return; }
+    const k = d.k; if (!k) return;
     const before = C[k]; C[k] = e.target.value; dirty = true;
     if (k === 'rent' && (!C.penalty || C.penalty === before)) setVal('penalty', C.rent);
     if (k === 'start' && C.start) setVal('end', K.oneYearEnd(C.start));
     calc();
   });
-  box.querySelectorAll('#c-type button').forEach(b => b.onclick = () => { C.tenantType = b.dataset.t; dirty = true; calc(); });
+  box.querySelectorAll('#c-type button').forEach(b => b.onclick = () => { C.tenantType = b.dataset.t; dirty = true; drawDocs(); calc(); });
   q('#c-room')?.addEventListener('change', e => {
     const r = db.get('rooms', e.target.value) || {}; C.room = t.room = e.target.value;
     setVal('rent', String(Number(r.rent) || 0)); setVal('penalty', C.rent); setVal('area', r.area ? String(r.area) : C.area);
-    const last = M.readings(C.room)[0]; setVal('meterE', last?.e != null ? String(last.e) : ''); setVal('meterW', last?.w != null ? String(last.w) : '');
+    const last = M.readings(C.room)[0]; C.meterE = last?.e != null ? String(last.e) : ''; C.meterW = last?.w != null ? String(last.w) : ''; meterRows('w'); meterRows('e');
     q('#c-title').innerHTML = title(); q('#c-line').title = M.lineLinkOf(C.room) ? '' : `คลัง ${C.room} ยังไม่ผูก LINE OA`; calc();
   });
   const save = async () => {
     if (!String(C.tenantName).trim()) { q('#c-err').textContent = 'กรุณากรอกชื่อผู้เช่า'; inp('tenantName').focus(); return false; }
     if (isNew && M.tenantOf(C.room)) { q('#c-err').textContent = `คลัง ${C.room} มีผู้เช่าแล้ว กรุณาเลือกคลังอื่น`; return false; }
+    if (C.tenantType !== 'person' && certTooOld(C)) { q('#c-err').textContent = 'หนังสือรับรองบริษัทออกเกิน 6 เดือนก่อนวันทำสัญญา — ขอฉบับใหม่จากผู้เช่า'; inp('certDate')?.focus(); return false; }
+    if (C.proxy && !String(C.proxyName || '').trim()) { q('#c-err').textContent = 'กรุณากรอกชื่อผู้รับมอบอำนาจ'; inp('proxyName')?.focus(); return false; }
+    if (wasSelf && !C.selfElec) {   // รับโอนมิเตอร์ไฟคืน: ต้องมีวันที่และเลขมิเตอร์ครบทุกตัว
+      const rd = C.elecBack?.readings || [];
+      if (!C.elecBack?.date || K.meterList(C, 'e').some((_, i) => String(rd[i] ?? '').trim() === '' || isNaN(rd[i]))) { q('#c-err').textContent = 'กรุณากรอกวันที่รับโอนและเลขมิเตอร์ไฟฟ้า ณ วันรับโอนให้ครบ'; q('#c-back').scrollIntoView({ block: 'center' }); return false; }
+    }
     const rec = { ...db.get('tenants', t.id) || t, room: C.room };
     Object.assign(rec, { name: C.tenantName.trim(), phone: String(C.phone).trim(), address: String(C.tenantAddress || '').trim(),
       taxId: C.tenantType !== 'person' ? String(C.tenantTaxId).trim() : '', idNo: C.tenantType === 'person' ? String(C.tenantTaxId).trim() : (rec.idNo || ''),
       signer: String(C.tenantSigner || '').trim(), rent: Number(C.rent) || 0, deposit: (Number(C.deposit) || 0) + (Number(C.clean) || 0),
       wRate: C.wRate === '' ? null : Number(C.wRate), eRate: C.eRate === '' ? null : Number(C.eRate),
-      contract: { ...C, savedAt: new Date().toISOString() } });
+      // มิเตอร์และไฟฟ้า: ใช้ตอนออกบิล (core/model.js meterSetup)
+      selfElec: !!C.selfElec, meters: { w: K.meterList(C, 'w').map(m => m.name), e: K.meterList(C, 'e').map(m => m.name) },
+      company: C.tenantType !== 'person' ? C.tenantName.trim() : '',
+      docs: WH_DOCS.filter(([, , on]) => on(C)).map(([tag]) => tag).filter(tag => C.docs.some(d => d.tag === tag)),   // เอกสารที่แนบแล้ว (ใช้เตือน "ข้อมูลไม่ครบ")
+      docsNeed: WH_DOCS.filter(([, , on]) => on(C)).map(([tag]) => tag),
+      elecBack: C.selfElec ? null : wasSelf ? C.elecBack : (rec.elecBack || null),
+      contract: { ...C, wNames: K.meterList(C, 'w').map(m => m.name), eNames: K.meterList(C, 'e').map(m => m.name), savedAt: new Date().toISOString() } });
     if (isNew) { rec.active = true; rec.since = C.start || C.date; }
-    await db.put('tenants', rec); t = rec;
+    // เอกสารที่เพิ่งแนบ → เก็บในเครื่อง แล้วเข้าคิวอัปโหลด Google Drive (โฟลเดอร์ contract) เหมือนรูปบัตร
+    const LBL = Object.fromEntries(WH_DOCS.map(([k, l]) => [k, l.replace(/\s*\(.*\)$/, '')]));
+    for (const d of rec.contract.docs || []) {
+      const url = newDocs[d.id]; if (!url) continue;
+      const n = rec.contract.docs.filter(x => x.tag === d.tag).indexOf(d) + 1;
+      await db.putPhoto({ id: d.id, dataUrl: url, name: `${rec.room}-${C.tenantName.trim()}-${LBL[d.tag] || 'เอกสาร'}-${n}.jpg`, tenantId: rec.id, createdAt: new Date().toISOString() });
+      await db.queue({ kind: 'photo', photoId: d.id, folder: 'contract' }); docCache[d.id] = url; delete newDocs[d.id];
+    }
+    await db.put('tenants', rec); t = rec; wasSelf = !!C.selfElec;
     if (isNew) { isNew = false; q('#c-title').innerHTML = title(); const s = q('#c-room'); if (s) s.disabled = true; toast(`บันทึกผู้เช่าคลัง ${rec.room} แล้ว`); }
     q('#c-err').textContent = ''; dirty = false; return true;
   };

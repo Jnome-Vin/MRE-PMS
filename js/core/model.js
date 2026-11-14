@@ -31,8 +31,8 @@ export const latestPeriod = () => periods()[0] || null;
 // เลขมิเตอร์ทั้งหมดของคลัง: จากบิล (วันที่จด) และจากการย้ายออก (จดตอนผู้เช่าออก) — เรียงจากใหม่ไปเก่า
 export function readings(roomId, before = '9999-12-31') {
   const list = [];
-  for (const b of db.all('bills')) if (b.room === roomId && b.wCur != null && b.eCur != null)
-    list.push({ w: b.wCur, e: b.eCur, date: b.meterDate || `${shiftP(b.period, -1)}-25`, from: 'bill', period: b.period });
+  for (const b of db.all('bills')) if (b.room === roomId && b.wCur != null && (b.eCur != null || b.selfE))   // selfE = ผู้เช่าขอไฟฟ้าเอง ไม่มีเลขไฟ
+    list.push({ w: b.wCur, e: b.eCur ?? null, date: b.meterDate || `${shiftP(b.period, -1)}-25`, from: 'bill', period: b.period });
   for (const t of db.all('tenants')) if (t.room === roomId && !t.active && t.moveOutMeter?.w != null)
     list.push({ w: t.moveOutMeter.w, e: t.moveOutMeter.e, date: t.moveOut, from: 'moveout', tenant: t.name });
   return list.filter(r => r.date < before).sort((a, b) => b.date.localeCompare(a.date) || (a.from === 'moveout' ? -1 : 1));
@@ -54,12 +54,23 @@ function utility(units, rate, min, applyMin) {
   if (applyMin && units < min) return { amount: min * rate, billed: min, min: true };
   return { amount: units * rate, billed: units, min: false };
 }
+// หน่วยรวมของมิเตอร์ชนิดเดียวกัน: มิเตอร์หลัก (wPrev/wCur หรือ ePrev/eCur) + มิเตอร์เพิ่ม (b.mx) — ขาดเลขตัวใดตัวหนึ่ง = ยังไม่ครบ
+const unitsOf = (b, k) => {
+  const p = k === 'w' ? b.wPrev : b.ePrev, c = k === 'w' ? b.wCur : b.eCur;
+  let u = c != null && p != null ? c - p : null;
+  for (const m of (b.mx || []).filter(m => m.k === k)) u = u == null || m.cur == null || m.prev == null ? null : u + (m.cur - m.prev);
+  return u;
+};
+// อัตราตามสัญญาเช่าคลัง (b.tier): น้ำ 0–wUnits หน่วยเหมาจ่าย wAmount · ไฟ 0–20 หน่วยตามตาราง eTable (21 ค่า) · เกินจากนั้นคิดหน่วย × อัตรา
+function tierW(units, rate, t) { return units <= Number(t.wUnits) ? { amount: Number(t.wAmount) || 0, billed: units, min: false, tier: true } : { amount: units * rate, billed: units, min: false }; }
+function tierE(units, rate, t) { return units >= 0 && units < t.eTable.length ? { amount: Number(t.eTable[units]) || 0, billed: units, min: false, tier: true } : { amount: units * rate, billed: units, min: false }; }
 export function calcBill(b) {
   const r = rates(), room = db.get('rooms', b.room);
-  const wu = b.wCur != null && b.wPrev != null ? b.wCur - b.wPrev : null;
-  const eu = b.eCur != null && b.ePrev != null ? b.eCur - b.ePrev : null;
-  const applyMin = r.minOn && !room?.noMin;
-  const wx = utility(wu, Number(b.wRate) || 0, minUnits('w'), applyMin), ex = utility(eu, Number(b.eRate) || 0, minUnits('e'), applyMin);
+  const wu = unitsOf(b, 'w');
+  const eu = b.selfE ? null : unitsOf(b, 'e');
+  const applyMin = r.minOn && !room?.noMin, T = b.tier || null;
+  const wx = T && wu != null && T.wUnits !== '' && T.wUnits != null ? tierW(wu, Number(b.wRate) || 0, T) : utility(wu, Number(b.wRate) || 0, minUnits('w'), applyMin);
+  const ex = T && eu != null && T.eTable?.length === 21 ? tierE(eu, Number(b.eRate) || 0, T) : utility(eu, Number(b.eRate) || 0, minUnits('e'), applyMin);
   // บิลที่นำเข้าจากโปรแกรมเดิมใช้ยอดที่โปรแกรมเดิมคำนวณไว้
   const legacyW = b.legacy && b.water != null, legacyE = b.legacy && b.elec != null;
   const water = legacyW ? b.water : wx.amount;
@@ -68,8 +79,8 @@ export function calcBill(b) {
   const other = items.reduce((a, o) => a + o.amount, 0);
   const total = round((Number(b.rent) || 0) + water + elec + (Number(b.fridge) || 0) + (Number(b.parking) || 0) + (Number(b.phone) || 0) + other);
   const paid = round((b.payments || []).reduce((a, p) => a + (Number(p.amount) || 0) + (Number(p.wht) || 0), 0));   // ภาษีหัก ณ ที่จ่ายถือเป็นยอดที่ชำระแล้ว
-  return { wu, eu, water: round(water), elec: round(elec), items, other, total, paid, balance: round(total - paid), ready: wu != null && eu != null,
-    wMin: !legacyW && wx.min, eMin: !legacyE && ex.min, wBilled: wx.billed, eBilled: ex.billed };
+  return { wu, eu, water: round(water), elec: round(elec), items, other, total, paid, balance: round(total - paid), ready: wu != null && (eu != null || !!b.selfE),
+    wMin: !legacyW && wx.min, eMin: !legacyE && ex.min, wBilled: wx.billed, eBilled: ex.billed, wTier: !!wx.tier, eTier: !!ex.tier };
 }
 const round = n => Math.round(n * 100) / 100;
 
@@ -79,8 +90,11 @@ export function billLines(b, lang = langOf(b)) {
   const m = b.period.split('-');
   if (b.rent) L.push({ label: en ? 'Room Rental' : 'ค่าเช่าคลัง', sub: `${m[1]}/${en ? m[0] : +m[0] + 543}`, amount: b.rent });   // ไทยใช้ปี พ.ศ.
   const minTxt = en ? ' min.' : ' ขั้นต่ำ';
-  if (c.eu != null) L.push({ label: en ? 'Electricity' : 'ค่าไฟฟ้า', sub: `( ${b.ePrev} - ${b.eCur} )${c.eMin ? minTxt : ''}`, qty: c.eMin ? c.eBilled : c.eu, price: b.eRate, amount: c.elec });
-  if (c.wu != null) L.push({ label: en ? 'Water' : 'ค่าน้ำประปา', sub: `( ${b.wPrev} - ${b.wCur} )${c.wMin ? minTxt : ''}`, qty: c.wMin ? c.wBilled : c.wu, price: b.wRate, amount: c.water });
+  // หลายมิเตอร์: แสดงเลขทุกตัว เช่น ( 1200 - 1208 ) + ( 3410 - 3425 ) · คิดตามตารางในสัญญา = ไม่แสดงราคาต่อหน่วย
+  const segs = (k, p, cur) => [[p, cur], ...(b.mx || []).filter(m => m.k === k).map(m => [m.prev, m.cur])].map(([x, y]) => `( ${x} - ${y} )`).join(' + ');
+  const tierTxt = k => en ? ' (contract rate)' : k === 'w' ? ' เหมาจ่ายขั้นต่ำ' : ' ตามตารางขั้นต่ำ';
+  if (c.eu != null) L.push({ label: en ? 'Electricity' : 'ค่าไฟฟ้า', sub: `${segs('e', b.ePrev, b.eCur)}${c.eTier ? tierTxt('e') : c.eMin ? minTxt : ''}`, qty: c.eMin ? c.eBilled : c.eu, price: c.eTier ? null : b.eRate, amount: c.elec });
+  if (c.wu != null) L.push({ label: en ? 'Water' : 'ค่าน้ำประปา', sub: `${segs('w', b.wPrev, b.wCur)}${c.wTier ? tierTxt('w') : c.wMin ? minTxt : ''}`, qty: c.wMin ? c.wBilled : c.wu, price: c.wTier ? null : b.wRate, amount: c.water });
   if (b.fridge) L.push({ label: en ? 'Refrigerator' : 'ค่าเช่าตู้เย็น', amount: b.fridge });
   if (b.parking) L.push({ label: en ? 'Parking' : 'ค่าที่จอดรถ', sub: slotsOf(b.room).map(s => s.id).join(', '), amount: b.parking });
   if (b.phone) L.push({ label: en ? 'Telephone' : 'ค่าโทรศัพท์', amount: b.phone });
@@ -116,10 +130,19 @@ export function payWindow(b, excludePayment = null) {
 export function missingInfo(t) {
   if (!t || t.active === false) return [];
   const m = [], p = acc.current().personal;   // ผู้ที่ไม่เห็นข้อมูลส่วนบุคคลจะไม่ถูกเตือนเรื่องที่ตัวเองมองไม่เห็น
+  if (t.contract?.kind === 'wh') {   // ผู้เช่าคลัง: เอกสารประกอบสัญญาแทนรูปบัตร (นิติบุคคล / ผู้รับมอบอำนาจ)
+    const DOC = { cert: 'หนังสือรับรองบริษัท', dirId: 'บัตรกรรมการ', poa: 'หนังสือมอบอำนาจ', proxyId: 'บัตรผู้รับมอบอำนาจ' };
+    if (p) for (const k of t.docsNeed || []) if (!(t.docs || []).includes(k)) m.push(DOC[k] || k);
+    if (!String(t.phone || '').trim()) m.push('เบอร์โทร');
+    if (p && !String(t.address || '').trim()) m.push('ที่อยู่');
+    if (p && t.contract.tenantType === 'person' && !t.contract.proxy && !t.idPhoto) m.push('รูปบัตร');
+    return m;
+  }
   if (p && !t.idPhoto) m.push('รูปบัตร');
   if (!String(t.phone || '').trim()) m.push('เบอร์โทร');
-  if (p && !String(t.idNo || '').trim()) m.push('เลขบัตร');
-  if (p && !t.birthDate && !t.company) m.push('วันเกิด');
+  const co = !!t.company || !!String(t.taxId || '').trim();   // ผู้เช่านิติบุคคล: ใช้เลขผู้เสียภาษีแทนเลขบัตร ไม่มีวันเกิด
+  if (p && !co && !String(t.idNo || '').trim()) m.push('เลขบัตร');
+  if (p && !t.birthDate && !co) m.push('วันเกิด');
   if (p && !String(t.address || '').trim()) m.push('ที่อยู่');
   return m;
 }
@@ -168,6 +191,54 @@ export function stayText(since, end) {
 export function stays(roomId = '') {
   return db.all('tenants').filter(t => !roomId || t.room === roomId)
     .sort((a, b) => a.room.localeCompare(b.room) || (b.active - a.active) || String(b.since || '').localeCompare(String(a.since || '')));
+}
+
+// วันสิ้นสัญญาเช่าคลัง: soon = เหลือน้อยกว่า 3 เดือน (หรือเลยกำหนดแล้ว) · label เช่น "เหลือ 2 เดือน 17 วัน"
+export function contractExpiry(t, today = new Date()) {
+  const end = t && t.active !== false && t.contract?.kind === 'wh' ? String(t.contract.end || '') : '';
+  const e = new Date(end + 'T00:00:00'); if (!end || isNaN(e)) return null;
+  const d0 = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const days = Math.round((e - d0) / 864e5), lim = new Date(d0); lim.setMonth(lim.getMonth() + 3);
+  let label;
+  if (days < 0) label = `เลยกำหนด ${-days} วัน`;
+  else {
+    let m = (e.getFullYear() - d0.getFullYear()) * 12 + e.getMonth() - d0.getMonth(); if (e.getDate() < d0.getDate()) m--;
+    const at = new Date(d0); at.setMonth(at.getMonth() + m); const dd = Math.round((e - at) / 864e5);
+    label = 'เหลือ ' + ([m && `${m} เดือน`, dd && `${dd} วัน`].filter(Boolean).join(' ') || 'วันนี้');
+  }
+  return { end, days, soon: e < lim, label, short: days < 0 ? 'หมดสัญญา' : m3(e, d0) };
+}
+const m3 = (e, d0) => { let m = (e.getFullYear() - d0.getFullYear()) * 12 + e.getMonth() - d0.getMonth(); if (e.getDate() < d0.getDate()) m--; return m > 0 ? `เหลือ ${m} เดือน` : `เหลือ ${Math.round((e - d0) / 864e5)} วัน`; };
+export const expiringTenants = () => db.all('tenants').filter(t => t.active).map(t => ({ t, x: contractExpiry(t) })).filter(o => o.x?.soon).sort((a, b) => a.x.end.localeCompare(b.x.end));
+
+// มิเตอร์ของผู้เช่าสำหรับบิลเดือน period: มิเตอร์เพิ่ม (ตัวที่ 2 ขึ้นไป) · ไฟฟ้าเอง · อัตราตามสัญญาเช่าคลัง
+// เลขเดิมของมิเตอร์เพิ่ม = เลขล่าสุดของบิลก่อนหน้า → ถ้าไม่มี ใช้เลขเริ่มต้นในสัญญา
+// รับโอนมิเตอร์ไฟคืน (elecBack) แล้วบิลแรกหลังจากนั้นเริ่มนับจากเลข ณ วันรับโอน
+export function meterSetup(t, roomId, period) {
+  const out = { selfE: false, mx: [], tier: null, wPrev: undefined, ePrev: undefined };
+  if (!t) return out;
+  const C = t.contract || {}, names = t.meters || {}, num = v => (v === '' || v == null || isNaN(v) ? null : Number(v));
+  out.selfE = !!t.selfElec;
+  const prev = db.all('bills').filter(x => x.room === roomId && x.period < period && x.tenantId === t.id).sort((a, b) => b.period.localeCompare(a.period))[0];
+  const back = !out.selfE && t.elecBack && (!prev || prev.selfE || prev.eCur == null) ? t.elecBack : null;
+  if (!prev && num(C.meterW) != null) out.wPrev = num(C.meterW);
+  if (!out.selfE && back) out.ePrev = num(back.readings?.[0]);
+  else if (!prev && !out.selfE && num(C.meterE) != null) out.ePrev = num(C.meterE);
+  for (const k of ['w', 'e']) {
+    if (k === 'e' && out.selfE) continue;
+    (names[k] || []).forEach((name, i) => {
+      if (!i) return;
+      let p = k === 'e' && back ? num(back.readings?.[i]) : prev?.mx?.find(m => m.k === k && m.i === i)?.cur ?? null;
+      if (p == null) p = num((C[k + 'Starts'] || [])[i]);
+      out.mx.push({ k, i, name, prev: p, cur: null });
+    });
+  }
+  if (C.kind === 'wh') {
+    const et = String(C.eTable || '').split(/[,\s]+/).filter(Boolean).map(Number);
+    out.tier = { wUnits: num(C.wMinUnits), wAmount: num(C.wMinAmount) ?? 0, eTable: et.length === 21 && et.every(n => !isNaN(n)) ? et : [] };
+    if (out.tier.wUnits == null) out.tier.wUnits = '';
+  }
+  return out;
 }
 
 // ปรับข้อมูลเก่าในเครื่องให้ตรงรุ่นปัจจุบัน (เรียกตอนเปิดแอปและหลังนำเข้าไฟล์)

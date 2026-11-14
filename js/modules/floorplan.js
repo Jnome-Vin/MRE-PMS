@@ -5,8 +5,10 @@ import * as M from '../core/model.js';
 import * as auth from '../core/auth.js';
 import * as L from '../core/layout.js';
 import * as acc from '../core/access.js';
-import { UNIT, FLOOR, feature } from '../core/config.js';
-import { esc, fmt0, thDate, periodLabel, toast, confirmBox } from '../core/ui.js';
+import { UNIT, FLOOR, feature, SITE } from '../core/config.js';
+import { esc, fmt0, thDate, periodLabel, toast, confirmBox, openModal, closeModal } from '../core/ui.js';
+// โครงการประเภทคลัง: คลิกคลังว่าง = ทำสัญญาใหม่ทันที · คลิกคลังที่มีผู้เช่า = ป๊อปอัปรายละเอียดกลางจอ (ไม่มีแผงด้านขวา)
+const WH = SITE.kind === 'warehouse';
 import { openTenantForm, moveOut, photoThumb, openTenantHistory, cancelMoveOut, printRefund, compress, fileToDataUrl } from './tenants.js';
 import { openPayment, openPaymentDetail, hasSlipIssue } from './billing.js';
 import { occ } from '../core/idcard.js';
@@ -21,8 +23,9 @@ function cell(r) {
   if (!r) return '<div></div>';
   const st = M.roomState(r), t = M.tenantOf(r.id), sl = M.slotsOf(r.id);
   const car = sl.some(s => s.zone === 'CAR'), moto = sl.filter(s => s.zone !== 'CAR').length;
-  return `<div class="room ${M.ROOM_TXT[st][2]} ${sel === r.id ? 'sel' : ''}" data-room="${r.id}" title="${M.ROOM_TXT[st][0]}">
-    <div><div class="no">${r.id}</div><div class="nm">${esc(t?.name || r.label || '— ว่าง —')}</div></div>
+  const x = M.contractExpiry(t);   // สัญญาเหลือน้อยกว่า 3 เดือน → กรอบแดงกระพริบ + ป้าย
+  return `<div class="room ${M.ROOM_TXT[st][2]} ${sel === r.id && !WH ? 'sel' : ''} ${x?.soon ? 'exp' : ''}" data-room="${r.id}" title="${M.ROOM_TXT[st][0]}">
+    <div><div class="no">${r.id}</div><div class="nm">${esc(t?.name || r.label || '— ว่าง —')}</div>${x?.soon ? `<div class="exp-tag">${esc(x.short)}</div>` : ''}</div>
     <div class="ic">${r.type === 'พัดลม' ? '<span title="คลังพัดลม">🌀<small>พัดลม</small></span>' : ''}${feature('fridge') && t?.fridge ? '<span title="เช่าตู้เย็น">🧊</span>' : ''}${moto ? `<span title="ที่จอดมอไซค์">🏍️${moto > 1 ? `<small>×${moto}</small>` : ''}</span>` : ''}${car ? '<span title="ที่จอดรถยนต์">🚗</span>' : ''}${warn(t)}</div></div>`;
 }
 
@@ -39,7 +42,7 @@ function detail(id) {
     <dt>โทร</dt><dd>${t?.phone ? `<a href="tel:${esc(t.phone)}">${esc(t.phone)}</a>` : '-'}</dd>
     ${t?.occupants?.length ? `<dt>ผู้พักร่วม</dt><dd>${t.occupants.map(o => { o = occ(o); return `${esc(o.name || '-')}${o.idNo ? ` <span class="note">${esc(o.idNo)}</span>` : ''}${o.photo ? ' 📄' : ''}`; }).join('<br>')}</dd>` : ''}
     <dt>เข้าพัก</dt><dd>${thDate(t?.since)}${t?.since ? ` <span class="note">(${M.stayText(t.since)})</span>` : ''}</dd>
-    ${t ? `<dt>วันเกิด</dt><dd>${t.birthDate ? thDate(t.birthDate) + (+t.birthDate.slice(5, 7) === new Date().getMonth() + 1 ? ' 🎂' : '') : '<span class="pill warn">ยังไม่ระบุ</span>'}</dd>` : ''}
+    ${t && !t.company && !t.taxId ? `<dt>วันเกิด</dt><dd>${t.birthDate ? thDate(t.birthDate) + (+t.birthDate.slice(5, 7) === new Date().getMonth() + 1 ? ' 🎂' : '') : '<span class="pill warn">ยังไม่ระบุ</span>'}</dd>` : ''}
     <dt>ค่าเช่า</dt><dd>฿${fmt0(t?.rent ?? r.rent)}</dd>
     <dt>น้ำ / ไฟ</dt><dd>฿${M.roomRates(r, t).water} / ฿${M.roomRates(r, t).elec} ต่อหน่วย${t && (t.wRate != null || t.eRate != null) ? ' <span class="note">(ตามสัญญา)</span>' : ''}</dd>
     ${t ? `<dt>เงินประกัน</dt><dd>฿${fmt0(t.deposit)}${M.depositUsed(t) ? ` <span class="note">(หักชำระบิลแล้ว ฿${fmt0(M.depositUsed(t))} · คงเหลือ ฿${fmt0(M.depositLeft(t))})</span>` : ''}${t.rentAdvance ? ` · ล่วงหน้า ฿${fmt0(t.rentAdvance)}` : ''}</dd>` : ''}
@@ -56,8 +59,29 @@ function detail(id) {
     <div class="scroll" style="max-height:220px;margin-top:6px"><table class="tbl">${M.stays(id).map(p =>
     `<tr class="click" data-past="${p.id}"><td style="white-space:normal">${esc(p.name)}${p.active ? ' <span class="pill ok">ปัจจุบัน</span>' : ''}</td>
       <td class="note" style="white-space:normal">${thDate(p.since)} – ${p.active ? 'ปัจจุบัน' : thDate(p.moveOut)}<br>${M.stayText(p.since, p.active ? null : p.moveOut)}</td></tr>`).join('')}</table></div></details>` : ''}
-  <div class="acts">${t ? `<button class="btn pri" data-a="bill">บิลของคลังนี้</button><button class="btn" data-a="edit">แก้ไขผู้เช่า</button><button class="btn" data-a="contract">📝 สัญญาเช่า</button><button class="btn" data-a="out">ย้ายออก</button>`
+  <div class="acts">${t ? (WH ? `<button class="btn pri" data-a="contract">✏️ แก้ไข / 🖨️ พิมพ์สัญญา</button><button class="btn" data-a="bill">🧾 ออกบิล / จดมิเตอร์</button><button class="btn" data-a="edit">ข้อมูลผู้เช่าอื่น ๆ</button><button class="btn" data-a="out">ย้ายออก</button>`
+      : `<button class="btn pri" data-a="bill">บิลของคลังนี้</button><button class="btn" data-a="edit">แก้ไขผู้เช่า</button><button class="btn" data-a="contract">📝 สัญญาเช่า</button><button class="btn" data-a="out">ย้ายออก</button>`)
     : `<button class="btn pri" data-a="in">+ ผู้เช่าเข้าใหม่</button>${r.kind !== 'room' ? '<button class="btn" data-a="bill">บิล/มิเตอร์</button>' : ''}${M.pastTenantsOf(id)[0] ? `<button class="btn" data-a="undo" title="ใช้เมื่อกดย้ายออกผิด">↩ ยกเลิกการย้ายออก (${esc(M.pastTenantsOf(id)[0].name)})</button>` : ''}${M.pastTenantsOf(id)[0]?.moveOutDoc ? '<button class="btn" data-a="refund">🖨️ เอกสารคืนเงิน</button>' : ''}`}</div>`;
+}
+
+// ---------- ป๊อปอัปรายละเอียดคลัง (โครงการประเภทคลัง): ผู้เช่า + สัญญา + เงินประกัน + มิเตอร์ + บิลล่าสุด ----------
+function popupHtml(id) {
+  const t = M.tenantOf(id), c = t?.contract?.kind === 'wh' ? t.contract : null, r = db.get('rooms', id) || {};
+  let html = detail(id);
+  if (t) {
+    const x = M.contractExpiry(t), dep = Number(c?.deposit) || 0, cln = Number(c?.clean) || 0, area = Number(r.area) || Number(c?.area);
+    const mt = k => (t.meters?.[k] || []).length > 1 ? t.meters[k].map(esc).join(' · ') : (t.meters?.[k]?.length ? '1 มาตร' : '-');
+    const row = (k, v) => v ? `<dt>${k}</dt><dd>${v}</dd>` : '';
+    const block = `<div class="fp-ct"><h4>📝 สัญญาเช่า</h4><dl>
+      ${row('เลขที่สัญญา', c ? esc(c.contractNo || '-') : '<span class="pill warn">ยังไม่ได้ทำสัญญาในระบบ</span>')}
+      ${row('เนื้อที่', area ? `${fmt0(area)} ตร.ม.` : '')}
+      ${c ? row('เริ่มเช่า', thDate(c.start)) + row('สิ้นสุดสัญญา', `<span class="${x?.soon ? 'blink-red' : ''}">${thDate(c.end)}</span> <span class="note ${x?.soon ? 'blink-red' : ''}">(${esc(x?.label || '')})</span>`) : ''}
+      ${c ? row('เงินประกัน', `ความเสียหาย ฿${fmt0(dep)} + ทำความสะอาด ฿${fmt0(cln)} = <b>฿${fmt0(dep + cln)}</b>`) : ''}
+      ${row('มิเตอร์น้ำ', mt('w'))}${row('ไฟฟ้า', t.selfElec ? '<span class="pill idle">⚡ ผู้เช่าขอไฟฟ้าจากการไฟฟ้าเอง</span>' : mt('e'))}
+    </dl></div>`;
+    html = html.replace('<dl>', block + '<dl>');
+  }
+  return html;
 }
 
 // ---------- การ์ดข้อมูลเมื่อชี้เมาส์ที่หน่วยเช่าบนผัง (ข้อมูลผู้เช่า + สัญญาที่บันทึกไว้) ----------
@@ -66,13 +90,16 @@ const addMonths = (iso, n) => { const d = new Date(iso); if (isNaN(d) || !Number
 function hoverHtml(id) {
   const r = db.get('rooms', id); if (!r) return '';
   const t = M.tenantOf(id), st = M.roomState(r), c = t?.contract || {};
-  const head = `<div class="hv-h"><b>${UNIT} ${esc(id)}</b><span class="pill ${M.ROOM_TXT[st][1]}">${M.ROOM_TXT[st][0]}</span></div>`;
-  if (!t) return head + `<div class="hv-e">ว่าง · คลิก แล้วกด "+ ผู้เช่าเข้าใหม่" เพื่อทำและพิมพ์สัญญา</div>`;
+  const area = Number(r.area) || Number(c.area);   // พื้นที่ที่ตั้งไว้ใน ตั้งค่า → จัดการคลัง
+  const head = `<div class="hv-h"><b>${UNIT} ${esc(id)}</b><span class="pill ${M.ROOM_TXT[st][1]}">${M.ROOM_TXT[st][0]}</span></div>`
+    + (area ? `<div class="hv-area">พื้นที่ ${fmt0(area)} ตร.ม.</div>` : '');
+  if (!t) return head + `<div class="hv-e">${WH && r.kind === 'room' ? 'ว่าง · คลิกเพื่อทำสัญญาผู้เช่าใหม่' : 'ว่าง · คลิก แล้วกด "+ ผู้เช่าเข้าใหม่" เพื่อทำและพิมพ์สัญญา'}</div>`;
+  const x = M.contractExpiry(t);
   const start = c.date || t.since, end = addMonths(start, c.minMonths);
   const row = (k, v) => v ? `<dt>${k}</dt><dd>${v}</dd>` : '';
   return head + `<dl>${row('ผู้เช่า', esc(c.tenantName || t.name || ''))}${row('โทร', esc(t.phone || c.phone || ''))}`
     + (c.kind === 'wh'   // สัญญาเช่าคลัง: เลขที่สัญญา + ระยะเวลาเช่า
-      ? `${row('เลขที่สัญญา', esc(c.contractNo || ''))}${row('ระยะเวลาเช่า', c.start ? `${thDate(c.start)} – ${thDate(c.end)}` : '')}${row('เนื้อที่', Number(c.area) ? `${fmt0(c.area)} ตร.ม.` : '')}`
+      ? `${row('เลขที่สัญญา', esc(c.contractNo || ''))}${row('ระยะเวลาเช่า', c.start ? `${thDate(c.start)} – <span class="${x?.soon ? 'blink-red' : ''}">${thDate(c.end)}</span>${x?.soon ? ` <small class="blink-red">(${esc(x.label)})</small>` : ''}` : '')}`
       : `${row('วันทำสัญญา', start ? thDate(start) : '')}${row('สัญญาขั้นต่ำ', Number(c.minMonths) ? `${esc(c.minMonths)} เดือน${end ? ` · ถึง ${thDate(end)}` : ''}` : '')}`)
     + `${row('ค่าเช่า', `฿${fmt0(t.rent ?? c.rent)} / เดือน`)}${row('เงินประกัน', Number(t.deposit) ? `฿${fmt0(t.deposit)}` : '')}</dl>`
     + (t.contract ? '' : '<div class="hv-e">ยังไม่ได้บันทึกสัญญาในระบบ</div>');
@@ -246,7 +273,7 @@ export default {
       <div class="seg">${floors.map(f => `<button data-f="${f}" class="${f === floor ? 'on' : ''}">${esc(floorName(f))}</button>`).join('')}</div>
       ${canEdit && !draft ? '<button class="btn" id="fp-edit">✏️ ปรับผัง</button>' : ''}</div>
     ${draft ? toolsHtml() : `<div class="legend"><span><i style="background:var(--ok-soft);border:1px solid var(--ok)"></i>ไม่มีค้าง</span><span><i style="background:var(--warn-soft);border:1px solid var(--warn)"></i>รอชำระ</span><span><i style="background:var(--bad-soft);border:1px solid var(--bad)"></i>ค้างชำระ</span><span><i style="background:var(--idle-soft);border:1px solid var(--idle)"></i>ว่าง / ส่วนกลาง</span><span>${icons}</span></div>`}
-    <div class="${draft ? '' : 'layout'}">${planHtml(all)}${draft ? '' : `<div class="card detail">${detail(sel)}</div>`}</div>`;
+    <div class="${draft || WH ? '' : 'layout'}">${planHtml(all)}${draft || WH ? '' : `<div class="card detail">${detail(sel)}</div>`}</div>`;
 
     const cfg = floorCfg(floor);
     if (cfg?.image) L.imageSrc(cfg.image).then(src => { const i = el.querySelector('#fp-bg'); if (i && src) { i.src = src; i.hidden = false; } });
@@ -254,25 +281,44 @@ export default {
     el.querySelector('#fp-edit')?.addEventListener('click', () => { draft = JSON.parse(JSON.stringify(L.get().floors || {})); sel = null; re(); });
     if (draft) return bindEdit(el, re);
 
-    el.querySelectorAll('[data-room]').forEach(b => b.onclick = () => { sel = b.dataset.room; re(); });
     bindHover(el);
     fitLabels(el);
-    el.querySelectorAll('[data-slot]').forEach(b => b.onclick = () => nav.go('parking', { highlight: [b.dataset.slot] }));
-    const t = sel && M.tenantOf(sel);
-    if (t?.idPhoto) photoThumb(t.idPhoto).then(h => { const d = el.querySelector('#idthumb'); if (d) d.innerHTML = h; });
-    const act = a => el.querySelector(`[data-a="${a}"]`);
-    act('bill')?.addEventListener('click', () => nav.go('billing', { room: sel }));
-    act('edit')?.addEventListener('click', () => openTenantForm(t, re));
-    act('fill')?.addEventListener('click', e => { e.preventDefault(); openTenantForm(t, re); });
-    act('in')?.addEventListener('click', () => import('./contract.js').then(m => m.openContract({ room: sel }, re)));
-    act('out')?.addEventListener('click', () => moveOut(t, re));
-    act('contract')?.addEventListener('click', () => import('./contract.js').then(m => m.openContract(t, re)));
-    act('lastbill')?.addEventListener('click', () => {
-      const lb = db.all('bills').filter(b => b.room === sel).sort((a, b) => b.period.localeCompare(a.period))[0];
-      ['paid', 'partial'].includes(M.billState(lb)) ? openPaymentDetail(lb, re) : openPayment(lb, re);
-    });
-    act('undo')?.addEventListener('click', () => cancelMoveOut(M.pastTenantsOf(sel)[0], re));
-    act('refund')?.addEventListener('click', () => printRefund(M.pastTenantsOf(sel)[0]));
-    el.querySelectorAll('[data-past]').forEach(tr => tr.onclick = () => openTenantHistory(db.get('tenants', tr.dataset.past), re));
+    if (WH) {   // คลิกคลังว่าง → ฟอร์มสัญญาใหม่ · คลังที่มีผู้เช่า (หรือส่วนกลาง) → ป๊อปอัปรายละเอียด
+      const open = id => {
+        const r = db.get('rooms', id);
+        if (!M.tenantOf(id) && r?.kind === 'room') return import('./contract.js').then(m => m.openContract({ room: id }, re));
+        const box = openModal(`<div class="detail fp-pop"><button class="btn sm fp-x" data-a="x" title="ปิด">✕</button>${popupHtml(id)}</div>`, { wide: true });
+        box.querySelector('[data-a="x"]').onclick = closeModal;
+        wire(box, id, () => { closeModal(); re(); }, nav, true);
+      };
+      el.querySelectorAll('[data-room]').forEach(b => b.onclick = () => open(b.dataset.room));
+      if (sel) { const id = sel; sel = null; if (db.get('rooms', id)) open(id); }   // มาจากหน้าอื่นพร้อมรหัสคลัง
+      return;
+    }
+    el.querySelectorAll('[data-room]').forEach(b => b.onclick = () => { sel = b.dataset.room; re(); });
+    wire(el, sel, re, nav);
   },
 };
+
+// ผูกปุ่มในแผงรายละเอียด/ป๊อปอัปของคลัง id (root = แผงด้านขวา หรือกล่องป๊อปอัป)
+function wire(root, id, re, nav, inModal = false) {
+  const go = (page, arg) => { if (inModal) closeModal(); nav.go(page, arg); };
+  root.querySelectorAll('[data-slot]').forEach(b => b.onclick = () => go('parking', { highlight: [b.dataset.slot] }));
+  const t = id && M.tenantOf(id);
+  if (t?.idPhoto) photoThumb(t.idPhoto).then(h => { const d = root.querySelector('#idthumb'); if (d) d.innerHTML = h; });
+  const act = a => root.querySelector(`[data-a="${a}"]`);
+  const then = fn => () => { if (inModal) closeModal(); fn(); };   // ฟอร์มอื่นใช้หน้าต่างเดียวกัน → ปิดป๊อปอัปก่อน
+  act('bill')?.addEventListener('click', () => go('billing', { room: id }));
+  act('edit')?.addEventListener('click', then(() => openTenantForm(t, re)));
+  act('fill')?.addEventListener('click', e => { e.preventDefault(); then(() => openTenantForm(t, re))(); });
+  act('in')?.addEventListener('click', then(() => import('./contract.js').then(m => m.openContract({ room: id }, re))));
+  act('out')?.addEventListener('click', then(() => moveOut(t, re)));
+  act('contract')?.addEventListener('click', then(() => import('./contract.js').then(m => m.openContract(t, re))));
+  act('lastbill')?.addEventListener('click', then(() => {
+    const lb = db.all('bills').filter(b => b.room === id).sort((a, b) => b.period.localeCompare(a.period))[0];
+    ['paid', 'partial'].includes(M.billState(lb)) ? openPaymentDetail(lb, re) : openPayment(lb, re);
+  }));
+  act('undo')?.addEventListener('click', then(() => cancelMoveOut(M.pastTenantsOf(id)[0], re)));
+  act('refund')?.addEventListener('click', () => printRefund(M.pastTenantsOf(id)[0]));
+  root.querySelectorAll('[data-past]').forEach(tr => tr.onclick = then(() => openTenantHistory(db.get('tenants', tr.dataset.past), re)));
+}

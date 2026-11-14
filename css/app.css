@@ -378,3 +378,19 @@ body.locked #root,body.locked #modal,body.locked #toast{visibility:hidden}
 body:not(:has(#view)) .zoomer,body.locked .zoomer{display:none}
 @media print{.zoomer{display:none}#view{zoom:1}}
 @media (max-width:700px){.zoomer input[type=range]{width:80px}.zoomer{right:8px;bottom:8px}}html.zoom-in .layout{grid-template-columns:1fr}
+
+/* โครงการประเภทคลัง: สัญญาใกล้หมด (เหลือน้อยกว่า 3 เดือน) · พื้นที่บนการ์ด · ป๊อปอัปรายละเอียดคลัง */
+@keyframes fpBlink{50%{opacity:.2}}
+@keyframes fpExpB{50%{border-color:transparent;box-shadow:none}}
+.blink-red{color:#dc2626!important;font-weight:700;animation:fpBlink 1s steps(2) infinite}
+.fp .fp-room.exp,.fp.has-img .fp-room.exp{border:2.5px solid #dc2626;box-shadow:0 0 0 2px rgba(220,38,38,.25);animation:fpExpB 1s steps(2) infinite}
+.fp-room .exp-tag{display:inline-block;margin-top:2px;padding:0 6px;border-radius:999px;background:#dc2626;color:#fff;font-size:max(10px,calc(var(--fp-nm,11px) * .95));font-weight:700;white-space:nowrap}
+.fp-tip .hv-area{margin:4px 0 2px;padding:3px 8px;border-radius:6px;background:var(--brand-soft,#e8f1f8);color:var(--nav,#14324a);font-weight:700}
+.fp-pop{position:relative}
+.fp-pop .fp-x{position:absolute;right:0;top:0}
+.fp-pop h3{padding-right:44px}
+.fp-ct{margin:10px 0;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:#fbfcfe}
+.fp-ct h4{margin:0 0 4px;font-size:15px}
+.fp-ct dl{margin:6px 0 0}
+.exp-list .blink-red{white-space:nowrap}
+@media (prefers-reduced-motion:reduce){.blink-red,.fp .fp-room.exp{animation:none}}

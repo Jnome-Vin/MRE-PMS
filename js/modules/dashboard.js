@@ -4,7 +4,7 @@ import * as M from '../core/model.js';
 import { esc, fmt0, periodLabel, periodOf, thDate, openModal, closeModal } from '../core/ui.js';
 import { birthdaysThisMonth, birthdayTable, missingBirthdays } from './birthdays.js';
 import { openPayment, openPaymentDetail, hasSlipIssue } from './billing.js';
-import { FLOOR, feature } from '../core/config.js';
+import { FLOOR, feature, SITE } from '../core/config.js';
 import * as L from '../core/layout.js';
 import * as acc from '../core/access.js';
 
@@ -27,6 +27,8 @@ export default {
     const incomplete = tenants.filter(t => M.missingInfo(t).some(x => x !== 'รูปบัตร')).length;
     const slots = db.all('slots');
     const cur = periodOf(), billed = M.billsOf(cur).filter(b => b.status !== 'draft').length;
+    const exp = M.expiringTenants();   // สัญญาเช่าคลังที่เหลือน้อยกว่า 3 เดือน (หรือเลยกำหนดแล้ว)
+    const hasWH = SITE.kind === 'warehouse' || tenants.some(t => t.contract?.kind === 'wh');
 
     el.innerHTML = `
     <div class="top"><h2>ภาพรวม · ${periodLabel(cur)}</h2><button class="btn pri" data-go="billing">จดมิเตอร์ / ออกบิล →</button></div>
@@ -34,10 +36,15 @@ export default {
       <button class="card kpi click" data-kpi="rooms"><div class="v">${occ.length}/${res.length}</div><div class="l">คลังมีผู้เช่า · ว่าง ${res.length - occ.length} คลัง ›</div></button>
       <button class="card kpi click" data-kpi="late"><div class="v" style="color:var(--bad)">${late.length}</div><div class="l">บิลเกินกำหนด ›</div></button>
       <button class="card kpi click" data-kpi="due"><div class="v" style="color:var(--warn)">${unpaid.length - late.length}</div><div class="l">บิลรอชำระ ›</div></button>
+      ${hasWH ? `<a class="card kpi click" href="#exp-list" style="${exp.length ? 'border-color:#fca5a5' : ''}"><div class="v ${exp.length ? 'blink-red' : ''}">${exp.length}</div><div class="l">สัญญาใกล้หมด (น้อยกว่า 3 เดือน) ›</div></a>` : ''}
       ${feature('fridge') ? `<button class="card kpi click" data-kpi="fridge"><div class="v">${tenants.filter(t => t.fridge).length}</div><div class="l">ตู้เย็นให้เช่า ›</div></button>` : ''}
       ${acc.current().hide.includes('reports') ? '' : `<button class="card kpi click" data-kpi="fixed"><div class="v">฿${fmt0(fixed)}</div><div class="l">รายรับคงที่/เดือน (ค่าเช่าและค่าบริการรายเดือน) ›</div></button>`}
     </div>
     <div class="grid2">
+      ${hasWH ? `<div class="card exp-list" id="exp-list" style="grid-column:1/-1"><b>⏰ สัญญาใกล้หมด (เหลือน้อยกว่า 3 เดือน)</b>
+        ${exp.length ? `<table class="tbl" style="margin-top:8px"><tr><th>คลัง</th><th>ผู้เช่า</th><th>เลขที่สัญญา</th><th>สิ้นสุดสัญญา</th><th>เหลือ</th></tr>${exp.map(({ t, x }) =>
+          `<tr class="click" data-goroom="${esc(t.room)}"><td><b>${esc(t.room)}</b></td><td>${esc(t.name)}</td><td>${esc(t.contract?.contractNo || '-')}</td><td class="blink-red">${thDate(x.end)}</td><td><span class="pill bad">${esc(x.label)}</span></td></tr>`).join('')}</table>`
+          : '<p class="note">ไม่มีสัญญาที่จะหมดภายใน 3 เดือน</p>'}</div>` : ''}
       <div class="card"><b>อัตราการเช่าราย${FLOOR}</b>
         ${[...new Set(res.map(r => r.floor))].sort((a, b) => a - b).map(f => { const rs = res.filter(r => r.floor === f), o = rs.filter(r => M.tenantOf(r.id)).length;
           return `<div class="rowbar"><span>${esc(L.floorOf(f)?.name || FLOOR + ' ' + f)}</span><div class="bar"><b style="width:${rs.length ? o / rs.length * 100 : 0}%"></b></div><span>${o}/${rs.length}</span></div>`; }).join('')}
@@ -64,6 +71,8 @@ export default {
         ${bdays.length ? `<div style="margin-top:8px">${birthdayTable(bdays)}</div>` : '<p class="note">ไม่มีผู้เช่าเกิดเดือนนี้ หรือยังไม่ได้บันทึกวันเกิด</p>'}</div>
     </div>`;
     el.querySelectorAll('[data-go]').forEach(a => a.onclick = e => { e.preventDefault(); nav.go(a.dataset.go); });
+    el.querySelectorAll('.exp-list [data-goroom]').forEach(tr => tr.onclick = () => nav.go('floorplan', { room: tr.dataset.goroom }));
+    el.querySelector('a[href="#exp-list"]')?.addEventListener('click', e => { e.preventDefault(); el.querySelector('#exp-list')?.scrollIntoView({ behavior: 'smooth', block: 'center' }); });
     el.querySelectorAll('[data-pdet]').forEach(a => a.onclick = e => { e.preventDefault(); openPaymentDetail(db.get('bills', a.dataset.pdet), () => this.render(el, nav)); });
     el.querySelectorAll('[data-pay]').forEach(x => x.onclick = () => openPayment(db.get('bills', x.dataset.pay), () => this.render(el, nav)));
     el.querySelectorAll('[data-kpi]').forEach(x => x.onclick = () => kpiDetail(x.dataset.kpi, { unpaid, late }, nav, () => this.render(el, nav)));

@@ -69,16 +69,39 @@ export async function storeImage(floor, dataUrl) {
 
 // PDF หน้าแรก → รูป (โหลด pdf.js เมื่อใช้ครั้งแรก ต้องออนไลน์)
 const PDFJS = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/';
+// โหลด pdf.js ครั้งเดียว · worker ต้องสร้างจาก blob ในโดเมนของแอป (เบราว์เซอร์ไม่ยอมเปิด worker ข้ามโดเมนตรง ๆ แล้วค้าง)
+let pdfReady = null;
+function loadPdfJs() {
+  return pdfReady ||= (async () => {
+    if (!window.pdfjsLib) await new Promise((res, rej) => { const s = document.createElement('script'); s.src = PDFJS + 'pdf.min.js'; s.onload = res; s.onerror = () => rej(new Error('โหลดตัวอ่าน PDF ไม่ได้ (ต้องต่ออินเทอร์เน็ต)')); document.head.appendChild(s); });
+    const src = await fetch(PDFJS + 'pdf.worker.min.js').then(r => { if (!r.ok) throw new Error('โหลดตัวอ่าน PDF ไม่ได้'); return r.text(); });
+    window.pdfjsLib.GlobalWorkerOptions.workerSrc = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+    return window.pdfjsLib;
+  })().catch(e => { pdfReady = null; throw e; });
+}
 export async function pdfToImage(file, max = 1800) {
-  if (!window.pdfjsLib) await new Promise((res, rej) => { const s = document.createElement('script'); s.src = PDFJS + 'pdf.min.js'; s.onload = res; s.onerror = () => rej(new Error('โหลดตัวอ่าน PDF ไม่ได้ (ต้องต่ออินเทอร์เน็ต)')); document.head.appendChild(s); });
-  window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS + 'pdf.worker.min.js';
+  await loadPdfJs();
   const pdf = await window.pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise;
   const page = await pdf.getPage(1), v0 = page.getViewport({ scale: 1 });
   const vp = page.getViewport({ scale: max / Math.max(v0.width, v0.height) });
   const c = document.createElement('canvas'); c.width = Math.round(vp.width); c.height = Math.round(vp.height);
   const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
-  await page.render({ canvasContext: ctx, viewport: vp }).promise;
+  await page.render({ canvasContext: ctx, viewport: vp, intent: 'print' }).promise;
   return c.toDataURL('image/jpeg', 0.85);
+}
+
+// PDF ทุกหน้า (ไม่เกิน limit หน้า) → รูป JPEG ทีละหน้า · ใช้กับเอกสารแนบ เช่น หนังสือรับรองบริษัท (เก็บเป็นรูปเหมือนรูปบัตร)
+export async function pdfPages(file, max = 1600, limit = 6) {
+  await loadPdfJs();
+  const pdf = await window.pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise, out = [];
+  for (let n = 1; n <= Math.min(pdf.numPages, limit); n++) {
+    const page = await pdf.getPage(n), v0 = page.getViewport({ scale: 1 }), vp = page.getViewport({ scale: max / Math.max(v0.width, v0.height) });
+    const c = document.createElement('canvas'); c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+    const ctx = c.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+    await page.render({ canvasContext: ctx, viewport: vp, intent: 'print' }).promise;
+    out.push(c.toDataURL('image/jpeg', 0.82));
+  }
+  return { pages: out, total: pdf.numPages };
 }
 
 // จัดกรอบอัตโนมัติเป็นตาราง สำหรับหน่วยเช่าที่ยังไม่มีตำแหน่ง

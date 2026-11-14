@@ -5,7 +5,7 @@ import * as auth from '../core/auth.js';
 import * as api from '../core/api.js';
 import * as sync from '../core/sync.js';
 import { getApiUrl, setApiUrl, APP, SITE, FLOOR } from '../core/config.js';
-import { esc, toast, openModal, closeModal, confirmBox, thDate } from '../core/ui.js';
+import { esc, toast, openModal, closeModal, confirmBox, thDate, fmt0 } from '../core/ui.js';
 import { randomString } from '../core/auth.js';
 import { printInFrame } from '../core/printframe.js';
 import * as sec from '../core/security.js';
@@ -49,6 +49,7 @@ function roomForm(r, done) {
       <label class="req">${FLOOR} (ตัวเลข)</label><input id="r-floor" type="number" min="1" max="99" value="${r.floor || 1}">
       <label>ประเภทพื้นที่</label><select id="r-kind">${[['room', 'คลัง'], ['kiosk', 'Kiosk / ร้านค้า'], ['office', 'สำนักงาน'], ['laundry', 'ห้องซักผ้า']].map(([k, v]) => `<option value="${k}" ${k === r.kind ? 'selected' : ''}>${v}</option>`).join('')}</select>
       <label>ชนิดคลัง</label><input id="r-type" value="${esc(r.type || '')}" list="r-types" placeholder="เช่น แอร์ / พัดลม / โกดัง 500 ตร.ม."><datalist id="r-types"><option>แอร์</option><option>พัดลม</option><option>ส่วนกลาง</option></datalist>
+      <label>พื้นที่ (ตร.ม.)</label><input id="r-area" type="number" min="0" step="1" value="${r.area ?? ''}" placeholder="ใช้ในสัญญาเช่า และการ์ดบนผัง">
       <label>ค่าเช่า/เดือน</label><input id="r-rent" type="number" min="0" step="100" value="${r.rent || 0}">
       <label>ค่าน้ำเฉพาะคลัง</label><input id="r-w" type="number" min="0" step="0.5" value="${r.wRate ?? ''}" placeholder="ว่าง = ใช้อัตรามาตรฐาน">
       <label>ค่าไฟเฉพาะคลัง</label><input id="r-e" type="number" min="0" step="0.5" value="${r.eRate ?? ''}" placeholder="ว่าง = ใช้อัตรามาตรฐาน">
@@ -59,10 +60,10 @@ function roomForm(r, done) {
   box.querySelector('#rx').onclick = closeModal;
   box.querySelector('#rok').onclick = async () => {
     const id = val(box, 'r-id');
-    if (!/^[A-Za-z0-9ก-๙._-]{1,12}$/.test(id)) return box.querySelector('#rerr').textContent = 'รหัสต้องเป็นตัวอักษร/ตัวเลข ไม่เกิน 12 ตัว ไม่มีช่องว่าง (ใช้ - . _ ได้)';
+    if (!/^[A-Za-z0-9ก-๙._/-]{1,12}$/.test(id)) return box.querySelector('#rerr').textContent = 'รหัสต้องเป็นตัวอักษร/ตัวเลข ไม่เกิน 12 ตัว ไม่มีช่องว่าง (ใช้ - . _ / ได้)';
     if (isNew && db.get('rooms', id)) return box.querySelector('#rerr').textContent = 'มีคลังนี้อยู่แล้ว';
-    const w = val(box, 'r-w'), e = val(box, 'r-e');
-    await db.put('rooms', { ...r, id, floor: Math.max(1, num(box, 'r-floor') || 1), kind: val(box, 'r-kind'), type: val(box, 'r-type'), rent: num(box, 'r-rent'),
+    const w = val(box, 'r-w'), e = val(box, 'r-e'), area = val(box, 'r-area');
+    await db.put('rooms', { ...r, id, floor: Math.max(1, num(box, 'r-floor') || 1), kind: val(box, 'r-kind'), type: val(box, 'r-type'), rent: num(box, 'r-rent'), area: area === '' ? null : +area,
       wRate: w === '' ? null : +w, eRate: e === '' ? null : +e, label: val(box, 'r-label'), noMin: box.querySelector('#r-nomin').checked });
     closeModal(); toast('บันทึกคลังแล้ว'); done();
   };
@@ -133,7 +134,7 @@ export default {
         <div class="form-acts"><button class="btn" id="codes">ดู/พิมพ์รหัสผูก LINE ของแต่ละคลัง</button></div></div>
 
       <div class="card"><b>จัดการคลัง</b> ${admin ? '' : '<span class="pill idle">เฉพาะ Administrator</span>'}
-        <div class="chips" style="margin-top:10px">${M.rooms().map(r => `<button class="chip" data-room="${r.id}" ${admin ? '' : 'disabled'}>${r.id}</button>`).join('')}</div>
+        <div class="chips" style="margin-top:10px">${M.rooms().map(r => `<button class="chip" data-room="${r.id}" ${admin ? '' : 'disabled'} title="กดเพื่อแก้ไข (พื้นที่ ค่าเช่า อัตราน้ำไฟ)">${r.id}${Number(r.area) ? ` <small class="note">${fmt0(r.area)} ตร.ม.</small>` : ''}</button>`).join('')}</div>
         ${admin ? '<div class="form-acts"><button class="btn pri" id="addRoom">+ เพิ่มคลัง</button></div>' : ''}</div>
 
       <div class="card"><b>🔐 ความปลอดภัย</b> ${admin ? '' : '<span class="pill idle">แก้ได้เฉพาะ Administrator</span>'}

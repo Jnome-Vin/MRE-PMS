@@ -28,9 +28,11 @@ function billFor(r) {
   if (ex) return ex;
   const t = M.tenantOf(r.id), pm = M.prevMeters(r.id, period), rt = M.roomRates(r, t);   // อัตราน้ำ/ไฟตามสัญญาผู้เช่า
   const lastName = db.all('bills').filter(b => b.room === r.id).sort((a, b) => b.period.localeCompare(a.period))[0]?.tenantName;
+  const ms = M.meterSetup(t, r.id, period);   // มิเตอร์เพิ่ม · ไฟฟ้าเอง · อัตราตามสัญญาเช่าคลัง
   return { id: M.billId(period, r.id), period, room: r.id, tenantId: t?.id || '', tenantName: t?.name || lastName || r.label || '', lang: t?.lang || 'th',
     rent: t ? Number(t.rent ?? r.rent) || 0 : (r.kind === 'room' ? 0 : Number(r.rent) || 0),
-    wPrev: pm.w, wCur: null, wRate: rt.water, ePrev: pm.e, eCur: null, eRate: rt.elec,
+    wPrev: ms.wPrev !== undefined ? ms.wPrev : pm.w, wCur: null, wRate: rt.water, ePrev: ms.selfE ? null : ms.ePrev !== undefined ? ms.ePrev : pm.e, eCur: null, eRate: rt.elec,
+    ...(ms.selfE ? { selfE: true } : {}), ...(ms.mx.length ? { mx: ms.mx } : {}), ...(ms.tier ? { tier: ms.tier } : {}),
     fridge: Number(t?.fridge) || 0, parking: Number(t?.parkingFee) || 0, items: [], payments: [], status: 'draft', _new: true };
 }
 const rowsFor = () => M.rooms().filter(r => r.kind !== 'room' || M.tenantOf(r.id) || db.get('bills', M.billId(period, r.id))).map(billFor);
@@ -523,34 +525,54 @@ export default {
       <th class="n">ค่าเช่า</th><th class="n">อื่นๆ</th><th class="n">รวม</th><th>เลขที่</th><th>สถานะ</th><th></th></tr></thead><tbody>
     ${rows.map(b => { const c = M.calcBill(b), s = M.billState(b), lock = s === 'paid';
       const other = (b.fridge || 0) + (b.parking || 0) + c.other + (b.phone || 0);
-      return `<tr data-room="${b.room}" class="${odd(b) ? 'warnrow' : ''}" ${b.room === focusRoom ? 'style="outline:2px solid var(--brand)"' : ''}>
+      const mxW = (b.mx || []).filter(m => m.k === 'w'), mxE = (b.mx || []).filter(m => m.k === 'e'), multi = mxW.length || mxE.length;
+      const inp = (k, v, cur, title = '') => `<input data-k="${k}" value="${v ?? ''}" inputmode="numeric" ${lock ? 'disabled' : ''} ${cur ? 'class="cur"' : `title="${title || 'เลขเดิม (แก้ได้)'}"`}>`;
+      const mxCells = m => `<td class="n">${inp(`mx:${m.k}:${m.i}:prev`, m.prev)}</td><td class="n">${inp(`mx:${m.k}:${m.i}:cur`, m.cur, true)}</td><td class="n note" data-mu="${m.k}:${m.i}">${m.cur != null && m.prev != null ? m.cur - m.prev : '-'}</td>`;
+      // มิเตอร์เพิ่มของคลังเดียวกันแสดงเป็นแถวย่อยใต้คลัง · ช่อง "หน่วย" ของแถวหลัก = รวมทุกมิเตอร์
+      const subs = Array.from({ length: Math.max(mxW.length, mxE.length) }, (_, i) => {
+        const w = mxW[i], e = mxE[i];
+        return `<tr class="mx-sub" data-r="${b.room}"><td></td><td class="note">↳ ${esc([w?.name, e?.name].filter(Boolean).join(' / '))}</td>
+          ${w ? mxCells(w) : '<td></td><td></td><td></td>'}${e ? mxCells(e) : '<td></td><td></td><td></td>'}<td colspan="6"></td></tr>`;
+      }).join('');
+      const nm0 = k => multi && (k === 'w' ? mxW : mxE).length ? `<div class="note" style="font-size:11px">${esc((db.get('tenants', b.tenantId)?.meters?.[k] || [])[0] || '')}</div>` : '';
+      return `<tr data-room="${b.room}" data-r="${b.room}" class="${odd(b) ? 'warnrow' : ''}" ${b.room === focusRoom ? 'style="outline:2px solid var(--brand)"' : ''}>
       <td><b>${b.room}</b></td><td>${esc(b.tenantName)}</td>
-      <td class="n"><input data-k="wPrev" value="${b.wPrev ?? ''}" inputmode="numeric" ${lock ? 'disabled' : ''} title="เลขเดิม (แก้ได้)"></td>
-      <td class="n"><input data-k="wCur" value="${b.wCur ?? ''}" inputmode="numeric" ${lock ? 'disabled' : ''} class="cur"></td><td class="n" data-wu>${c.wu ?? '-'}</td>
-      <td class="n"><input data-k="ePrev" value="${b.ePrev ?? ''}" inputmode="numeric" ${lock ? 'disabled' : ''} title="เลขเดิม (แก้ได้)"></td>
-      <td class="n"><input data-k="eCur" value="${b.eCur ?? ''}" inputmode="numeric" ${lock ? 'disabled' : ''} class="cur"></td><td class="n" data-eu>${c.eu ?? '-'}</td>
+      <td class="n">${inp('wPrev', b.wPrev)}${nm0('w')}</td>
+      <td class="n">${inp('wCur', b.wCur, true)}</td><td class="n" data-wu>${c.wu ?? '-'}${mxW.length ? '<div class="note" style="font-size:11px">รวม</div>' : ''}</td>
+      ${b.selfE ? `<td class="n" colspan="3"><span class="pill idle" title="ผู้เช่าชำระค่าไฟกับการไฟฟ้าเอง (ตั้งในสัญญาเช่า)">⚡ ขอไฟฟ้าเอง</span><span data-eu hidden></span></td>`
+        : `<td class="n">${inp('ePrev', b.ePrev)}${nm0('e')}</td>
+      <td class="n">${inp('eCur', b.eCur, true)}</td><td class="n" data-eu>${c.eu ?? '-'}${mxE.length ? '<div class="note" style="font-size:11px">รวม</div>' : ''}</td>`}
       <td class="n">${fmt0(b.rent)}</td><td class="n" title="ตู้เย็น ${b.fridge || 0} · จอดรถ ${b.parking || 0} · อื่น ${c.other}">${other ? fmt0(other) : '-'}</td>
       <td class="n" data-tot><b>${c.ready ? fmt(c.total) : '-'}</b></td><td>${esc(b.invoiceNo || '')}</td>
       <td>${['due', 'late', 'partial'].includes(s) ? `<button class="pill ${M.BILL_TXT[s][1]} pay-btn" data-pay title="กดเพื่อรับชำระเงิน">${M.BILL_TXT[s][0]} 💰</button>`
         : s === 'paid' ? (hasSlipIssue(b) ? `<button class="pill bad pay-btn" data-pdetail title="ผลตรวจสลิปไม่ผ่าน">ชำระแล้ว ⚠️ ตรวจสลิป</button>`
           : `<button class="pill ok pay-btn" data-pdetail title="ดูรายละเอียดการโอน / แก้ไข">ชำระแล้ว 🔍</button>`) : `<span class="pill ${M.BILL_TXT[s][1]}">${M.BILL_TXT[s][0]}</span>`} ${b.lineStatus === 'sent' ? '💬' : b.lineStatus === 'queued' ? '⏳' : ''}</td>
-      <td><button class="btn sm" data-open>ดูบิล</button></td></tr>`; }).join('')}
+      <td><button class="btn sm" data-open>ดูบิล</button></td></tr>${subs}`; }).join('')}
     </tbody></table></div>`;
 
     const re = () => this.render(el, nav);
     el.querySelector('#per').onchange = e => { period = e.target.value; focusRoom = null; re(); };
     el.querySelector('#mdate').onchange = e => { meterDate = e.target.value; };
+    // ใส่ค่าจากช่องลงบิล: data-k = ชื่อช่อง หรือ mx:<w|e>:<ลำดับ>:<prev|cur> สำหรับมิเตอร์เพิ่ม
+    const setK = (b, k, v) => {
+      if (!k.startsWith('mx:')) { b[k] = v; return; }
+      const [, mk, mi, f] = k.split(':');
+      b.mx = (b.mx || []).map(m => m.k === mk && m.i === +mi ? { ...m, [f]: v } : m);
+    };
+    const subUnit = (room, m) => [...el.querySelectorAll('tr.mx-sub')].filter(x => x.dataset.r === room).map(x => x.querySelector(`[data-mu="${m.k}:${m.i}"]`)).find(Boolean);
     el.querySelectorAll('tr[data-room]').forEach(tr => {
       const room = tr.dataset.room;
       const cur = () => billFor(db.get('rooms', room));
-      tr.querySelectorAll('input').forEach(inp => {
-        inp.oninput = () => {   // คำนวณสดในแถว
-          const b = { ...cur() }; tr.querySelectorAll('input').forEach(i => b[i.dataset.k] = i.value === '' ? null : Number(i.value));
-          const c = M.calcBill(b);
-          tr.querySelector('[data-wu]').textContent = c.wu ?? '-'; tr.querySelector('[data-eu]').textContent = c.eu ?? '-';
+      const ins = [...el.querySelectorAll('tr[data-r]')].filter(x => x.dataset.r === room).flatMap(x => [...x.querySelectorAll('input')]);
+      ins.forEach(inp => {
+        inp.oninput = () => {   // คำนวณสดในแถว (รวมแถวย่อยมิเตอร์เพิ่ม)
+          const b = { ...cur() }; ins.forEach(i => setK(b, i.dataset.k, i.value === '' ? null : Number(i.value)));
+          const c = M.calcBill(b), unit = (k, u) => tr.querySelector(`[data-${k}u]`).firstChild && (tr.querySelector(`[data-${k}u]`).firstChild.textContent = u ?? '-');
+          unit('w', c.wu); unit('e', c.eu);
+          for (const m of b.mx || []) { const o = subUnit(room, m); if (o) o.textContent = m.cur != null && m.prev != null ? m.cur - m.prev : '-'; }
           tr.querySelector('[data-tot]').innerHTML = `<b>${c.ready ? fmt(c.total) : '-'}</b>`; tr.classList.toggle('warnrow', odd(b));
         };
-        inp.onchange = async () => { const b = cur(); b[inp.dataset.k] = inp.value === '' ? null : Number(inp.value); if (inp.classList.contains('cur')) b.meterDate = meterDate; await save(b); };
+        inp.onchange = async () => { const b = cur(); setK(b, inp.dataset.k, inp.value === '' ? null : Number(inp.value)); if (inp.classList.contains('cur')) b.meterDate = meterDate; await save(b); };
         inp.onkeydown = e => { if (e.key !== 'Enter') return; e.preventDefault();
           const all = [...el.querySelectorAll('input.cur:not(:disabled)')], i = all.indexOf(inp); (all[i + 1] || inp).focus(); all[i + 1]?.select(); };
       });
@@ -583,6 +605,8 @@ function printMeterForm(rows) {
   printInFrame(`<div class="page" style="font-family:'IBM Plex Sans Thai',sans-serif">
     <h3 style="margin:0">${esc(p.name)} — แบบฟอร์มจดมิเตอร์น้ำ-ไฟ</h3><p>สำหรับบิลเดือน ${periodLabel(period)} · วันที่จด ....................... ผู้จด .......................</p>
     <table class="rep" style="font-size:13px"><thead><tr><th>คลัง</th><th>ผู้เช่า</th><th>น้ำ เดิม</th><th style="width:110px">น้ำ ใหม่</th><th>ไฟ เดิม</th><th style="width:110px">ไฟ ใหม่</th><th>หมายเหตุ</th></tr></thead><tbody>
-    ${rows.map(b => `<tr style="height:30px"><td>${b.room}</td><td>${esc(b.tenantName)}</td><td>${b.wPrev ?? ''}</td><td></td><td>${b.ePrev ?? ''}</td><td></td><td></td></tr>`).join('')}
+    ${rows.map(b => { const mxW = (b.mx || []).filter(m => m.k === 'w'), mxE = (b.mx || []).filter(m => m.k === 'e'), nm = db.get('tenants', b.tenantId)?.meters || {};
+      return `<tr style="height:30px"><td>${b.room}</td><td>${esc(b.tenantName)}${mxW.length || mxE.length ? ` <small>(${esc([nm.w?.[0], b.selfE ? '' : nm.e?.[0]].filter(Boolean).join(' / '))})</small>` : ''}</td><td>${b.wPrev ?? ''}</td><td></td>${b.selfE ? '<td colspan="2">ขอไฟฟ้าเอง</td>' : `<td>${b.ePrev ?? ''}</td><td></td>`}<td></td></tr>`
+        + Array.from({ length: Math.max(mxW.length, mxE.length) }, (_, i) => `<tr style="height:30px"><td></td><td>↳ ${esc([mxW[i]?.name, mxE[i]?.name].filter(Boolean).join(' / '))}</td><td>${mxW[i]?.prev ?? ''}</td><td></td><td>${mxE[i]?.prev ?? ''}</td><td></td><td></td></tr>`).join(''); }).join('')}
     </tbody></table></div>`);
 }
