@@ -104,6 +104,7 @@ export default {
         <form class="form" style="margin-top:12px">
           <label>ชื่อโครงการ</label><input id="pname" value="${esc(p.name)}">
           <label>ชื่ออังกฤษ</label><input id="pnameen" value="${esc(p.nameEn)}">
+          <label>ชื่อนิติบุคคลผู้ให้เช่า (ใช้ในสัญญา)</label><input id="plegal" value="${esc(p.legalName ?? SITE.legalName ?? '')}" placeholder="เว้นว่าง = ใช้ชื่อโครงการ เช่น บริษัท … จำกัด">
           <label>ที่อยู่</label><input id="paddr" value="${esc(p.address)}">
           <label>โทร</label><input id="pphone" value="${esc(p.phone)}">
           <label>เลขผู้เสียภาษี</label><input id="ptax" value="${esc(p.taxId)}">
@@ -158,7 +159,7 @@ export default {
 
     $e('#saveRates').onclick = async () => { await db.put('settings', { ...rt, id: 'rates', water: num(el, 'water'), elec: num(el, 'elec'), parkingFee: num(el, 'pfee'), fridgeFee: num(el, 'ffee'), dueDay: num(el, 'due') || 5, maxOccupants: num(el, 'maxocc'),
       minOn: $e('#minon').checked, minWaterUnits: num(el, 'mwu'), minElecUnits: num(el, 'meu') }); toast('บันทึกอัตราแล้ว'); };
-    $e('#saveProp').onclick = async () => { await db.put('settings', { ...p, id: 'property', name: val(el, 'pname'), nameEn: val(el, 'pnameen'), address: val(el, 'paddr'), addressEn: val(el, 'paddren'), bankText: val(el, 'pbank'), wifi: val(el, 'pwifi'), phone: val(el, 'pphone'), taxId: val(el, 'ptax'),
+    $e('#saveProp').onclick = async () => { await db.put('settings', { ...p, id: 'property', name: val(el, 'pname'), nameEn: val(el, 'pnameen'), legalName: val(el, 'plegal'),address: val(el, 'paddr'), addressEn: val(el, 'paddren'), bankText: val(el, 'pbank'), wifi: val(el, 'pwifi'), phone: val(el, 'pphone'), taxId: val(el, 'ptax'),
       promptpay: val(el, 'ppp'), billNote: val(el, 'pnote'), billNoteEn: val(el, 'pnoteen'), showQr: $e('#pqr').checked, claudeSlip: $e('#pclaude').checked }); toast('บันทึกแล้ว'); };
     $e('#auto').onchange = async e => { await sync.autoUpload(e.target.checked); toast(e.target.checked ? 'เปิดอัปโหลดอัตโนมัติ' : 'ปิดอัปโหลดอัตโนมัติ'); };
     $e('#testApi')?.addEventListener('click', async () => {

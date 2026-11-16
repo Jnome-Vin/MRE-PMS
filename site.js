@@ -7,6 +7,7 @@ export const SITE = {
     "hubUrl":  "",
     "name":  "มีชัย เรียลเอสเตท",
     "nameEn":  "Meechai Real Estate",
+    "legalName":  "บริษัท มีชัย เรียลเอสเตท จำกัด",
     "kind":  "warehouse",
     "unit":  "คลัง",
     "unitEn":  "Warehouse",
@@ -34,11 +35,14 @@ export const SITE = {
                                      "448-B",
                                      "448/1-A",
                                      "448/1-B",
-                                     "448/2-A",
-                                     "448/2-B"
+                                     "448/2AB"
                                  ]
                    }
                ],
+    "retired":  [
+                    "448/2-A",
+                    "448/2-B"
+                ],
     "slots":  [
 
               ],

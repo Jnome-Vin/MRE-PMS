@@ -474,7 +474,8 @@ async function openContractWH(tIn = {}, done) {
           ${f('dueDay', 'ชำระภายในวันที่ (ของทุกเดือน)', 'f-red', 'inputmode="numeric"')}
           <div class="full">${f('penalty', 'ค่าปรับต่อเดือน กรณีไม่ขนย้ายออกเมื่อสิ้นสุดสัญญา (บาท)', 'f-red', num).slice(5, -6)}<div class="auto">ตั้งต้น = ค่าเช่า 1 เดือน ตามสัญญาเดิม</div></div>
           ${f('deposit', 'เงินประกันความเสียหาย (บาท)', 'f-blue', num)}${f('clean', 'เงินประกันการทำความสะอาด (บาท)', 'f-blue', num)}
-          <div class="full"><label class="l">รวมเงินประกัน (ข้อ 3)</label><input class="f-red" id="c-total" disabled></div>
+          ${f('keyDep', 'เงินประกันกุญแจ (บาท)', 'f-blue', num)}
+          <div><label class="l">รวมเงินประกัน (ข้อ 3)</label><input class="f-red" id="c-total" disabled></div>
         </div></div>
       <div class="sec"><h4>💧⚡ 3. ค่าน้ำ ค่าไฟ และมิเตอร์ (ข้อ 8)</h4>
         <label class="wh-sw"><input type="checkbox" id="c-self" ${C.selfElec ? 'checked' : ''}><i></i><span><b>ผู้เช่าขอไฟฟ้าจากการไฟฟ้าเอง</b><br><span class="note">ไม่คิดค่าไฟในบิล · ไม่มีช่องจดมิเตอร์ไฟ · ข้อ 8.2 เปลี่ยนเป็นเงื่อนไขโอนมิเตอร์คืนก่อนรับเงินประกัน</span></span></label>
@@ -624,7 +625,7 @@ async function openContractWH(tIn = {}, done) {
     const rec = { ...db.get('tenants', t.id) || t, room: C.room };
     Object.assign(rec, { name: C.tenantName.trim(), phone: String(C.phone).trim(), address: String(C.tenantAddress || '').trim(),
       taxId: C.tenantType !== 'person' ? String(C.tenantTaxId).trim() : '', idNo: C.tenantType === 'person' ? String(C.tenantTaxId).trim() : (rec.idNo || ''),
-      signer: String(C.tenantSigner || '').trim(), rent: Number(C.rent) || 0, deposit: (Number(C.deposit) || 0) + (Number(C.clean) || 0),
+      signer: String(C.tenantSigner || '').trim(), rent: Number(C.rent) || 0, deposit: K.total(C),
       wRate: C.wRate === '' ? null : Number(C.wRate), eRate: C.eRate === '' ? null : Number(C.eRate),
       // มิเตอร์และไฟฟ้า: ใช้ตอนออกบิล (core/model.js meterSetup)
       selfElec: !!C.selfElec, meters: { w: K.meterList(C, 'w').map(m => m.name), e: K.meterList(C, 'e').map(m => m.name) },

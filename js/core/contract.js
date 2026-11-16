@@ -14,7 +14,8 @@ import * as L from './layout.js';
 import { SITE } from '../../site.js';
 
 // ชื่อ/ที่อยู่ผู้ให้เช่า และบัญชีรับเงิน มาจาก ตั้งค่า → ข้อมูลโครงการ
-const PN = en => { const p = M.property(); return (en ? p.nameEn || p.name : p.name) || ''; };
+// ชื่อผู้ให้เช่าในสัญญา: ชื่อนิติบุคคล (ตั้งค่า → ข้อมูลโครงการ หรือ legalName ใน site.js) ถ้าไม่มีใช้ชื่อโครงการ
+const PN = en => { const p = M.property(); return (en ? p.nameEn || p.name : (p.legalName ?? SITE.legalName) || p.name) || ''; };
 const ADDR = en => { const p = M.property(); return (en ? p.addressEn || p.address : p.address) || ''; };
 const BANK = en => M.property().bankText || (en ? 'the bank account notified by the Lessor' : 'บัญชีธนาคารที่ผู้ให้เช่าแจ้งไว้');
 const WIFI = () => M.property().wifi ? 'Wifi password: ' + M.property().wifi : '';
@@ -62,7 +63,7 @@ export function defaults(t) {
   };
 }
 const extraList = C => (C.extras || []).filter(x => has(x.name) || has(x.amt));
-export const total = C => C.kind === 'wh' ? (Number(C.deposit) || 0) + (Number(C.clean) || 0) : ['firstAmount', 'deposit', 'clean', 'fridgeFee', 'motoFee'].reduce((a, k) => a + (Number(C[k]) || 0), 0) + extraList(C).reduce((a, x) => a + (Number(x.amt) || 0), 0);
+export const total = C => C.kind === 'wh' ? (Number(C.deposit) || 0) + (Number(C.clean) || 0) + (Number(C.keyDep) || 0) : ['firstAmount', 'deposit', 'clean', 'fridgeFee', 'motoFee'].reduce((a, k) => a + (Number(C[k]) || 0), 0) + extraList(C).reduce((a, x) => a + (Number(x.amt) || 0), 0);
 
 // ---------- บล็อกเนื้อหา ----------
 // run: { t: ข้อความ, c: สี, b, i, u, dots: จำนวนจุด (ช่องว่าง), nw: ห้ามตัดบรรทัด (กลุ่ม) }
@@ -200,7 +201,7 @@ export function defaultsWH(t) {
     tenantSigner: t.signer || '', phone: t.phone || '',
     lessorSigner: p.signer || prev.lessorSigner || '', witness1: prev.witness1 || '', witness2: '',
     start, end: oneYearEnd(start), rent: String(rent), penalty: String(rent), dueDay: String(M.rates().dueDay || 5),
-    deposit: String(Number(t.deposit) || rent * 2), clean: '3000',
+    deposit: String(Number(t.deposit) || rent * 2), clean: '3000', keyDep: '',
     wRate: String(rt.water ?? 17), wMinUnits: '10', wMinAmount: '160', eRate: String(rt.elec ?? 7), eTable: E_TABLE,
     meterE: last?.e != null ? String(last.e) : '', meterW: last?.w != null ? String(last.w) : '', photos: [],
   };
@@ -223,7 +224,7 @@ const siteStreet = () => ADDR().replace(/^\s*(เลขที่\s*)?[\d/\-]+\s*
 
 function contentWH(C, x) {
   const p = M.property(), co = C.tenantType !== 'person';
-  const money2b = v => money2(v), dep = Number(C.deposit) || 0, cln = Number(C.clean) || 0, tot = dep + cln;
+  const money2b = v => money2(v), dep = Number(C.deposit) || 0, cln = Number(C.clean) || 0, key = Number(C.keyDep) || 0, tot = dep + cln + key;
   const et = String(C.eTable || E_TABLE).split(/[,\s]+/).filter(Boolean);
   const eRows = Array.from({ length: 11 }, (_, i) => i < 10
     ? [String(i), et[i] ?? '', String(11 + i), et[11 + i] ?? '']
@@ -248,6 +249,7 @@ function contentWH(C, x) {
     { k: 'p', in: 1, runs: [B('ข้อที่ 3. '), T('เพื่อเป็นการประกันความเสียหายจากการประพฤติผิดสัญญา “ผู้เช่า” ตกลงวางเงินประกันเป็นจำนวนทั้งสิ้น '), NW(C_(money2(tot), 'red'), T(' บาท')), T(' '), NW(T('('), C_(bahtText(tot), 'red'), T(')')), T(' ประกอบด้วย')] },
     { k: 'items', word: '', unit: 'บาท', rows: [['-', [T('เงินประกันความเสียหาย')], has(C.deposit) ? C_(money2(dep), 'blue') : D(8)],
       ['-', [T('เงินประกันการทำความสะอาด กวาด ถู ไม่มีคราบกาว หรืออันใดที่ต้องใช้สารพิเศษ')], has(C.clean) ? C_(money2(cln), 'blue') : D(8)],
+      ...(key ? [['-', [T('เงินประกันกุญแจ')], C_(money2(key), 'blue')]] : []),
       ['', [B('รวมเป็นจำนวนเงิน')], { ...C_(money2(tot), 'red'), b: 1 }]] },
     { k: 'p', in: 1, runs: [T('หากผู้เช่าไม่ชำระค่าเช่าหรือประพฤติผิดสัญญาข้อหนึ่งข้อใดและทำให้ผู้ให้เช่าได้รับความเสียหายด้วยประการใด ๆ ผู้เช่ายินยอมให้ผู้ให้เช่าหักเงินประกันจำนวนนี้ได้ เพื่อชดใช้ความเสียหายที่ผู้ให้เช่าได้รับตามจำนวนความเสียหายที่แท้จริง หากมีเงินประกันเหลืออยู่อีกเท่าใด ผู้ให้เช่าจะต้องคืนให้แก่ผู้เช่าหลังจากที่ผู้เช่าส่งมอบสถานที่เช่าคืนให้แก่ผู้ให้เช่าเป็นที่เรียบร้อย')] },
     { k: 'p', in: 1, runs: [EM('เงินประกันการเช่านี้ ใช้สำหรับเป็นประกันความเสียหายของสินทรัพย์เท่านั้น ไม่สามารถใช้หักเป็นค่าเช่าได้ทุกกรณี')] },
@@ -268,12 +270,12 @@ function contentWH(C, x) {
     { k: 'p', in: 1, runs: [T('ตลอดระยะเวลาการเช่า ผู้เช่ายินยอมให้ผู้ให้เช่าหรือตัวแทนของผู้ให้เช่าเข้าตรวจดูทรัพย์สินของผู้เช่าและสถานที่เช่าเป็นครั้งคราวในระยะเวลาอันสมควร โดยต้องแจ้งให้ผู้เช่าทราบล่วงหน้า 7 วัน')] },
     { k: 'p', in: 1, sp: 1, runs: [B('ข้อที่ 8. '), T('ค่าน้ำประปา ค่าไฟฟ้า ค่าโทรศัพท์ที่เกี่ยวกับการเช่าตามสัญญา มีเงื่อนไขดังต่อไปนี้')] },
     { k: 'p', in: 1, runs: [T('8.1 ค่าน้ำประปา เป็นมิเตอร์ชั่วคราว คิดค่าน้ำประปาในอัตราหน่วยละ '), V(C.wRate, 'red', 6, money2b), T(' บาท ทั้งนี้หากผู้เช่าใช้น้ำประปาตั้งแต่ 0 - '), V(C.wMinUnits, 'red', 4), T(' หน่วยของมิเตอร์ ผู้เช่าตกลงที่จะจ่ายค่าน้ำในเดือนนั้น ๆ ให้แก่ผู้ให้เช่าตามรายละเอียดดังต่อไปนี้')] },
-    { k: 'grid', title: 'อัตราค่าน้ำประปา', head: ['ปริมาณน้ำใช้ ลูกบาศก์เมตร (หน่วย)', 'ค่าน้ำ (บาท)'],
+    { k: 'grid', title: 'อัตราค่าน้ำประปา', head: ['ปริมาณน้ำใช้ ลูกบาศก์เมตร (หน่วย)', 'ค่าน้ำ (บาท)'], shade: [0],
       rows: [[`0 – ${C.wMinUnits || '…'}`, `เหมาจ่าย ${money2(C.wMinAmount)} บาท`], [`ตั้งแต่หน่วยที่ ${(Number(C.wMinUnits) || 0) + 1} ขึ้นไป`, `หน่วยละ ${money2(C.wRate)} บาท`]] },
     ...(C.selfElec   // ผู้เช่าขอไฟฟ้าจากการไฟฟ้าเอง: ไม่มีตารางค่าไฟ
       ? [{ k: 'p', in: 1, runs: [T('8.2 ผู้เช่าจะทำการชำระค่าไฟฟ้าจากทางการไฟฟ้าเอง โดยเมื่อสิ้นสัญญา ผู้เช่าจะต้องเป็นผู้ดำเนินการโอนมิเตอร์ไฟฟ้ามาให้ทางผู้ให้เช่าจนแล้วเสร็จก่อน จึงจะรับเงินประกันคืน')] }]
       : [{ k: 'p', in: 1, runs: [T('8.2 ค่าไฟฟ้า คิดค่าไฟฟ้าในอัตราหน่วยละ '), V(C.eRate, 'red', 6, money2b), T(' บาท ต่อเดือน ทั้งนี้หากผู้เช่าใช้กระแสไฟฟ้าตั้งแต่ 0 - 20 หน่วยของเครื่องวัด ผู้เช่าตกลงที่จะจ่ายค่าไฟฟ้าในเดือนนั้น ๆ ให้แก่ผู้ให้เช่าตามรายละเอียดดังต่อไปนี้')] },
-        { k: 'grid', title: 'อัตราค่ากระแสไฟฟ้า', head: ['หน่วย', 'บาท', 'หน่วย', 'บาท'], rows: eRows }]),
+        { k: 'grid', title: 'อัตราค่ากระแสไฟฟ้า', head: ['หน่วย', 'บาท', 'หน่วย', 'บาท'], rows: eRows, eq: 1, shade: [0, 2] }]),
     { k: 'page', flow: 1 },
     { k: 'p', in: 1, runs: [T('8.3 ค่าโทรศัพท์ ผู้เช่าเป็นผู้รับผิดชอบในการขอและเป็นผู้ชำระค่าใช้จ่ายเอง ในกรณีที่มีการติดตั้งสายเคเบิล อินเทอร์เน็ต โทรศัพท์ เมื่อสิ้นสุดสัญญาเช่า ผู้เช่าจะรื้อถอนสายออกไป รวมทั้งปิดรูที่เจาะ ตอก หรือดำเนินการอื่นใดเพื่อยึดสายดังกล่าวให้ติดกับอาคารที่เช่า ให้อยู่ในสภาพเดิม')] },
     { k: 'p', in: 1, sp: 1, runs: [B('ข้อที่ 9. '), T('ค่าภาษีที่ดินและสิ่งปลูกสร้าง “ผู้ให้เช่า” เป็นผู้รับผิดชอบ')] },
@@ -398,6 +400,8 @@ const CSS = `
 .ct-grid{border-collapse:collapse;margin:4px auto 8px;font-size:14.5px;line-height:1.5}
 .ct-grid th,.ct-grid td{border:1px solid #000;padding:1px 10px;text-align:center;font-weight:400}
 .ct-grid th{font-weight:700}
+.ct-grid.eq{table-layout:fixed;width:150mm}.ct-grid.eq td,.ct-grid.eq th{padding:1px 4px}
+.ct-grid .sh{background:#ddebf7;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 .ct-pg>*{position:relative}
 .ct-hd{text-align:center;font-weight:700;font-size:16px;line-height:1.6;border-bottom:2.5px solid #1F4E79;padding-bottom:3px;margin:0 -2mm 14px}
 .ct-ft{position:absolute!important;left:18mm;right:18mm;bottom:9mm;border-top:2.5px solid #1F4E79}
@@ -469,7 +473,8 @@ function blockHtml(b, ctx) {
       return `<p class="${[b.in ? 'in' : '', b.ind ? 'ind' : '', b.sp ? 'sp' : '', b.center ? 'ctr' : '', j ? 'j' : ''].join(' ')}">${runsHtml(b.runs, j)}</p>`; }
     case 'rate': return `<div class="ct-rate"><span>${esc(b.a)}</span><span>${esc(b.b)}</span></div>`;
     case 'items': return `<table class="ct-items">${b.rows.map(([n, r, a]) => `<tr><td style="width:9mm">${n}</td><td>${runsHtml(r)}</td><td class="l">${esc(b.word)}</td><td class="a">${runHtml(a)}</td><td class="u">${esc(b.unit)}</td></tr>`).join('')}</table>`;
-    case 'grid': return `<div class="ctr" style="margin-top:4px"><b>${esc(b.title || '')}</b></div><table class="ct-grid"><tr>${b.head.map(h => `<th>${esc(h)}</th>`).join('')}</tr>${b.rows.map(r => `<tr>${r.map(v => `<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</table>`;
+    case 'grid': { const sh = i => (b.shade || []).includes(i) ? ' class="sh"' : '';   // eq = ช่องกว้างเท่ากัน · shade = คอลัมน์ "หน่วย" สีฟ้าอ่อน
+      return `<div class="ctr" style="margin-top:4px"><b>${esc(b.title || '')}</b></div><table class="ct-grid${b.eq ? ' eq' : ''}">${b.eq ? `<colgroup>${b.head.map(() => `<col style="width:${(100 / b.head.length).toFixed(3)}%">`).join('')}</colgroup>` : ''}<tr>${b.head.map((h, i) => `<th${sh(i)}>${esc(h)}</th>`).join('')}</tr>${b.rows.map(r => `<tr>${r.map((v, i) => `<td${sh(i)}>${esc(v)}</td>`).join('')}</tr>`).join('')}</table>`; }
     case 'qr': return ctx.qr ? `<div class="ct-qr"><img src="${ctx.qr}" alt="QR"></div>` : '';
     case 'group': return `<div>${b.blocks.map(x => blockHtml(x, ctx)).join('')}</div>`;
     case 'sign': {
@@ -587,8 +592,10 @@ async function blockDocx(b, ctx) {
     case 'rate': return P(runX({ t: b.a }) + tab() + runX({ t: b.b }), { ind: 680, tabs: TABS([2400]) });
     case 'items': return b.rows.map(([n, r, a]) => P(runX({ t: n }) + tab() + flat(r).map(runX).join('') + tab() + runX({ t: b.word }) + tab() + runX(a) + tab() + runX({ t: b.unit }),
       { ind: 340, tabs: TABS([900], [6500], [8550, 'right'], [8750]) })).join('');
-    case 'grid': { const n = b.head.length, w = Math.floor((n > 2 ? 7600 : 6000) / n), ws = Array(n).fill(w), cell = (v, bold) => cellX(w, P(runX({ t: String(v), b: bold ? 1 : 0, sz: 28 }), { jc: 'center' }), { border: 1, vAlign: 'center' });
-      return P(runX({ t: b.title || '', b: 1 }), { jc: 'center', before: 120 }) + `<w:tbl><w:tblPr><w:tblW w:w="${w * n}" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid>${ws.map(x => `<w:gridCol w:w="${x}"/>`).join('')}</w:tblGrid><w:tr>${b.head.map(h => cell(h, 1)).join('')}</w:tr>${b.rows.map(r => `<w:tr>${r.map(v => cell(v)).join('')}</w:tr>`).join('')}</w:tbl>` + P(''); }
+    case 'grid': { const n = b.head.length, w = Math.floor((n > 2 ? 8500 : 6000) / n), ws = Array(n).fill(w);
+      const cell = (v, bold, i) => cellX(w, P(runX({ t: String(v), b: bold ? 1 : 0, sz: 28 }), { jc: 'center' }), { border: 1, vAlign: 'center' })
+        .replace('</w:tcPr>', (b.shade || []).includes(i) ? '<w:shd w:val="clear" w:color="auto" w:fill="DDEBF7"/></w:tcPr>' : '</w:tcPr>');
+      return P(runX({ t: b.title || '', b: 1 }), { jc: 'center', before: 120 }) + `<w:tbl><w:tblPr><w:tblW w:w="${w * n}" w:type="dxa"/><w:jc w:val="center"/><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid>${ws.map(x => `<w:gridCol w:w="${x}"/>`).join('')}</w:tblGrid><w:tr>${b.head.map((h, i) => cell(h, 1, i)).join('')}</w:tr>${b.rows.map(r => `<w:tr>${r.map((v, i) => cell(v, 0, i)).join('')}</w:tr>`).join('')}</w:tbl>` + P(''); }
     case 'qr': return ctx.qr ? P(ctx.wr.drawing(ctx.wr.addImage(ctx.qr), ...fit(ctx.qrSize, 120, 46)), { jc: 'center', before: 120, after: 120 }) : '';
     case 'group': return (await Promise.all(b.blocks.map(x => blockDocx(x, ctx)))).join('');
     case 'sign': {

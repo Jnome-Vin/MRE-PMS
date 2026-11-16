@@ -69,14 +69,14 @@ function popupHtml(id) {
   const t = M.tenantOf(id), c = t?.contract?.kind === 'wh' ? t.contract : null, r = db.get('rooms', id) || {};
   let html = detail(id);
   if (t) {
-    const x = M.contractExpiry(t), dep = Number(c?.deposit) || 0, cln = Number(c?.clean) || 0, area = Number(r.area) || Number(c?.area);
+    const x = M.contractExpiry(t), dep = Number(c?.deposit) || 0, cln = Number(c?.clean) || 0, key = Number(c?.keyDep) || 0, area = Number(r.area) || Number(c?.area);
     const mt = k => (t.meters?.[k] || []).length > 1 ? t.meters[k].map(esc).join(' · ') : (t.meters?.[k]?.length ? '1 มาตร' : '-');
     const row = (k, v) => v ? `<dt>${k}</dt><dd>${v}</dd>` : '';
     const block = `<div class="fp-ct"><h4>📝 สัญญาเช่า</h4><dl>
       ${row('เลขที่สัญญา', c ? esc(c.contractNo || '-') : '<span class="pill warn">ยังไม่ได้ทำสัญญาในระบบ</span>')}
       ${row('เนื้อที่', area ? `${fmt0(area)} ตร.ม.` : '')}
       ${c ? row('เริ่มเช่า', thDate(c.start)) + row('สิ้นสุดสัญญา', `<span class="${x?.soon ? 'blink-red' : ''}">${thDate(c.end)}</span> <span class="note ${x?.soon ? 'blink-red' : ''}">(${esc(x?.label || '')})</span>`) : ''}
-      ${c ? row('เงินประกัน', `ความเสียหาย ฿${fmt0(dep)} + ทำความสะอาด ฿${fmt0(cln)} = <b>฿${fmt0(dep + cln)}</b>`) : ''}
+      ${c ? row('เงินประกัน', `ความเสียหาย ฿${fmt0(dep)} + ทำความสะอาด ฿${fmt0(cln)}${key ? ` + กุญแจ ฿${fmt0(key)}` : ''} = <b>฿${fmt0(dep + cln + key)}</b>`) : ''}
       ${row('มิเตอร์น้ำ', mt('w'))}${row('ไฟฟ้า', t.selfElec ? '<span class="pill idle">⚡ ผู้เช่าขอไฟฟ้าจากการไฟฟ้าเอง</span>' : mt('e'))}
     </dl></div>`;
     html = html.replace('<dl>', block + '<dl>');

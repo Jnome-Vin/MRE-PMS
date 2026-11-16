@@ -267,8 +267,12 @@ export async function migrateData() {
   if (siteUnits.length) {
     const ids = new Set(siteUnits.map(u => u.id));
     const used = new Set([...db.all('tenants', { raw: true }), ...db.all('bills', { raw: true })].map(o => String(o.room || '')));
-    for (const r of db.all('rooms', { withDeleted: true, raw: true }))
-      if (!ids.has(r.id) && r.updatedBy === 'seed' && !used.has(r.id)) await db.hardRemove('rooms', r.id);
+    for (const r of db.all('rooms', { withDeleted: true, raw: true })) {
+      if (ids.has(r.id) || used.has(r.id)) continue;
+      // คลังที่เลิกใช้ (SITE.retired เช่น รวม 448/2-A + 448/2-B เป็น 448/2AB): ลบแบบซิงก์ให้ทุกเครื่อง
+      if ((SITE.retired || []).includes(r.id)) { if (!r.deleted) await db.remove('rooms', r.id); }
+      else if (r.updatedBy === 'seed') await db.hardRemove('rooms', r.id);
+    }
     const add = siteUnits.filter(u => !db.all('rooms', { withDeleted: true, raw: true }).some(r => r.id === u.id))
       .map(u => ({ ...u, kind: 'room', label: '', type: SITE.unitType || '', rent: 0, updatedAt: '2000-01-01T00:00:00.000Z', updatedBy: 'seed' }));
     if (add.length) await db.putMany('rooms', add);
